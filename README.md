@@ -1,4 +1,4 @@
-# SaitekiKuukan
+# SaitekiKuukan (for Data Oriented Design)
 > High-performance Data-Oriented Design (DOD) Library for C++
 
 `saitekikuukan` is a **data-oriented container library** designed for game engines and simulations.  
