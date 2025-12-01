@@ -10,7 +10,6 @@ It leverages template parameter packs and metaprogramming to easily handle SoA, 
 
 - **Data-Oriented Design Ready** ✅  
   - Chunked (AoSoA) / SoA data structures for maximum CPU cache efficiency  
-  - Manage frequently accessed attributes like x, y separately from others like hp, atk, def
 
 - **Type Pack Operations & Metaprogramming** ✅  
   - Static type manipulation using type lists (`type_list`) and filters (`_filter`)  
