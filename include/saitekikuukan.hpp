@@ -37,6 +37,7 @@
 #endif
 
 namespace SAITEKIKUUKAN_NAMESPACE {
+    // ================================= _meta =================================
     // 型リストとメタ関数
     namespace _meta {
         template<typename T>
@@ -213,6 +214,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
     }
     using _meta::type_list;
 
+    // =============================== error_code ==============================
     // 操作結果を表すエラー
     enum class error_code {
         out_of_range,
@@ -222,6 +224,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         operation_canceled
     };
 
+    // =============================== generator ===============================
     // ID の生成方針
     namespace generator {
         template<typename T>
@@ -299,6 +302,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 #endif
     }
 
+    // ============================== eventsystem ==============================
     // 操作前後のイベントとリスナ
     namespace eventsystem {
         // will_* は操作前、did_* は操作完了後の通知を表す。
@@ -540,6 +544,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         };
     }
 
+    // =============================== reflection ==============================
     // リフレクションによる列と行参照の生成
 #if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
     namespace storage {
@@ -639,6 +644,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
     }
 #endif
 
+    // ================================= schema ================================
     // 型パックと構造体に共通のスキーマ
     // 構造体を一つの列として使う従来形式と区別するため、展開は record<T> で明示する。
     template<typename Record>
@@ -744,6 +750,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         }
     }
 
+    // ================================ storage ================================
     // 列ストレージと固定長・可変長の管理
     namespace storage {
         template<template<typename, size_t, typename...> typename T>
@@ -963,6 +970,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         };
     }
 
+    // ================================= buffer ================================
     // ID・イベント・有効行数を管理する共通の buffer
     template<generator::is_generator IDGenerator = generator::iota,
             eventsystem::is_eventsystem EventSystem = eventsystem::dummy,
@@ -1265,6 +1273,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         std::tuple<std::vector<buffer<G, E, storage::static_storage, ChunkSize, Types>>...> chunks;
     };
      */
+    // ================================== rows =================================
     // 列ストレージ単体の行ビュー
 #if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
     namespace storage {
@@ -1362,6 +1371,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
 }
 
+// ============================== std::ranges ==============================
 // 行ビューが一時オブジェクトでも、列ストレージが生きていればイテレータを利用できる。
 #if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
 namespace std::ranges {
