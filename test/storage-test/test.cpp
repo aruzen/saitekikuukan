@@ -117,6 +117,25 @@ void check_resize() {
     }
 }
 
+void check_append_limits() {
+    // vector<bool> の実容量が論理上限を超えていても、上限で追加を止める。
+    kk::basic_soa<kk::storage::dynamic_layout<2>, bool> bits;
+    bits.reserve(2);
+    bits.push_back(true);
+    bits.push_back(false);
+    try { bits.push_back(true); std::abort(); } catch (const std::length_error&) {}
+    check(bits.size() == 2 && bits.column<0>()[0] && !bits.column<0>()[1]);
+
+    kk::basic_soa<kk::storage::dynamic_layout<0>, int> zero;
+    try { zero.push_back(1); std::abort(); } catch (const std::length_error&) {}
+    check(zero.empty());
+    kk::basic_soa<kk::storage::dynamic_layout<2>> empty;
+    empty.push_back();
+    empty.push_back();
+    try { empty.push_back(); std::abort(); } catch (const std::length_error&) {}
+    check(empty.size() == 2);
+}
+
 void check_failures() {
     kk::storage::basic_columns<kk::storage::dynamic_layout<>, int, fragile> values;
     values.reserve(8);
@@ -167,6 +186,7 @@ int main() {
         kk::storage::dynamic_storage>::max_size == kk::storage::DynamicSizeUnlimited);
     check_failures();
     check_resize();
+    check_append_limits();
 
     const std::string a(256, 'a'), b(256, 'b');
     kk::storage::basic_columns<kk::storage::dynamic_layout<64>, std::string, std::string> values;

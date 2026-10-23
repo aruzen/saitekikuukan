@@ -905,8 +905,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 }
             }
 
-        protected:
-            void append_values(data_tuple& values) {
+            // 再確保を含む処理は、通常の追加経路から分離する。
+            void append_with_growth(data_tuple& values) {
                 if (size() == max_size())
                     throw std::length_error("Column count exceeds max_size");
                 if constexpr (Layout::resizable) {
@@ -926,6 +926,38 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                     }(std::make_index_sequence<element_types::size>{});
                 }
                 ++m_size;
+            }
+
+            template<size_t... Indices>
+            void append_available(data_tuple& values, std::index_sequence<Indices...>) {
+                constexpr bool vector_columns = Layout::resizable &&
+                    (std::same_as<decltype(schema_type::template column<Indices>(std::declval<columns_type&>())),
+                        std::vector<typename element_types::template get<Indices>>&> && ...);
+                if constexpr (vector_columns) {
+                    // 標準 allocator の配列内でポインタを比較し、再確保が不要なことを直接示す。
+                    auto has_room = []<typename T>(const std::vector<T>& column) {
+                        if constexpr (std::same_as<T, bool>)
+                            return column.size() != column.capacity();
+                        else
+                            return column.data() && column.data() + column.size() < column.data() + column.capacity();
+                    };
+                    if (size() < max_size() && (has_room(get<Indices>()) && ...)) [[likely]] {
+                        try {
+                            (get<Indices>().emplace_back(std::move_if_noexcept(std::get<Indices>(values))), ...);
+                        } catch (...) {
+                            rollback();
+                            throw;
+                        }
+                        ++m_size;
+                        return;
+                    }
+                }
+                append_with_growth(values);
+            }
+
+        protected:
+            void append_values(data_tuple& values) {
+                append_available(values, std::make_index_sequence<element_types::size>{});
             }
 
         public:
