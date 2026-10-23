@@ -872,6 +872,16 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             static constexpr bool copyable = element_types::template apply<copy_traits>::value;
             static_assert(!Layout::resizable || element_types::template apply<relocation_traits>::value,
                 "Resizable columns require copy construction or noexcept move construction");
+            // スカラの値初期化を標準 vector にまとめても、行の構築・破棄の副作用が変わらない場合に限る。
+            // 独自列やメンバ初期化子を持つ構造体は、従来どおり行ごとに初期化する。
+            static constexpr bool bulk_resizable = []<size_t... Indices>(std::index_sequence<Indices...>) {
+                return Layout::resizable &&
+                    (std::is_scalar_v<typename element_types::template get<Indices>> && ...) &&
+                    (std::same_as<decltype(schema_type::template column<Indices>(std::declval<columns_type&>())),
+                        std::vector<typename element_types::template get<Indices>>&> && ...) &&
+                    (!schema_type::named || (std::is_trivially_default_constructible_v<value_type> &&
+                        std::is_trivially_destructible_v<value_type>));
+            }(std::make_index_sequence<element_types::size>{});
             size_t m_size = 0;
 
             static columns_type take_columns(basic_columns& other) noexcept(
@@ -1011,6 +1021,16 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 if (count > max_size())
                     throw std::length_error("Column count exceeds max_size");
                 if constexpr (element_types::size == 0) {
+                    m_size = count;
+                } else if constexpr (bulk_resizable) {
+                    try {
+                        [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                            (get<Indices>().resize(count), ...);
+                        }(std::make_index_sequence<element_types::size>{});
+                    } catch (...) {
+                        rollback();
+                        throw;
+                    }
                     m_size = count;
                 } else if (count < size()) {
                     while (size() > count) pop_back();

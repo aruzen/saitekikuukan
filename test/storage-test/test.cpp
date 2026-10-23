@@ -2,14 +2,35 @@
 #include "../buffer-test/checks.hpp"
 
 #include <deque>
+#include <new>
 #include <string>
 
 using buffer_test::check;
+
+// 標準 allocator のまま、複数列の途中で確保が失敗する経路を確認する。
+int allocations_until_failure = -1;
+[[gnu::noinline]] void* operator new(std::size_t size) {
+    if (allocations_until_failure == 0) {
+        allocations_until_failure = -1;
+        throw std::bad_alloc{};
+    }
+    if (allocations_until_failure > 0) --allocations_until_failure;
+    if (auto* memory = std::malloc(size ? size : 1)) return memory;
+    throw std::bad_alloc{};
+}
+[[gnu::noinline]] void operator delete(void* memory) noexcept { std::free(memory); }
+[[gnu::noinline]] void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
 
 struct deque_layout {
     static constexpr bool resizable = true;
     static constexpr std::size_t max_size = 64;
     template<typename T> using column = std::deque<T>;
+};
+
+template<typename T>
+struct no_resize_column : std::vector<T> { void resize(std::size_t) = delete; };
+struct no_resize_layout : deque_layout {
+    template<typename T> using column = no_resize_column<T>;
 };
 
 template<typename T>
@@ -38,6 +59,63 @@ struct fragile {
     fragile& operator=(const fragile&) = default;
     fragile& operator=(fragile&&) = default;
 };
+
+struct numbered {
+    inline static int sequence = 0;
+    int value = ++sequence;
+};
+
+// 確保の省略で失敗注入が変わらないよう、呼び出し境界を設ける。
+[[gnu::noinline]] void resize_for_failure(kk::soa<float, double>& values) { values.resize(64); }
+
+void check_resize() {
+    kk::soa<int, float, bool, int*> values;
+    values.resize(2);
+    int target = 0;
+    values.write(0, {42, 1.5f, true, &target});
+    values.resize(8);
+    check(values.size() == 8 && values.read(0) == std::tuple{42, 1.5f, true, &target});
+    for (std::size_t i = 1; i < values.size(); ++i)
+        check(values.read(i) == std::tuple{0, 0.0f, false, static_cast<int*>(nullptr)});
+    values.resize(1);
+    values.resize(4);
+    check(values.read(0) == std::tuple{42, 1.5f, true, &target});
+    check(values.read(1) == std::tuple{0, 0.0f, false, static_cast<int*>(nullptr)});
+    auto* data = values.column<0>().data();
+    values.resize(4);
+    check(values.column<0>().data() == data);
+
+    kk::soa<float, double> failed;
+    failed.push_back(3.0f, 4.0);
+    allocations_until_failure = 1; // 最初の列の拡張後、次の列の確保で失敗する。
+    try { resize_for_failure(failed); std::abort(); } catch (const std::bad_alloc&) {}
+    check(allocations_until_failure == -1);
+    check(failed.size() == 1 && failed.column<0>().size() == 1 && failed.column<1>().size() == 1);
+    check(failed.read(0) == std::tuple{3.0f, 4.0});
+    failed.resize(64);
+    check(failed.read(63) == std::tuple{0.0f, 0.0});
+
+    numbered::sequence = 0;
+    kk::soa<numbered> ordered;
+    ordered.resize(3);
+    ordered.resize(5);
+    check(numbered::sequence == 5);
+    for (std::size_t i = 0; i < ordered.size(); ++i)
+        check(ordered.column<0>()[i].value == static_cast<int>(i + 1));
+
+    kk::basic_soa<no_resize_layout, int> custom;
+    custom.resize(4);
+    check(custom.size() == 4 && custom.column<0>()[3] == 0);
+
+    kk::buffer<kk::generator::iota, kk::eventsystem::dummy,
+        kk::storage::dynamic_storage, 16, int, float> ids;
+    check(ids.resize(3).has_value());
+    check(ids.resize(8).has_value());
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        check(ids.storage.ids[i] == i);
+        check(ids.column<0>()[i] == 0 && ids.column<1>()[i] == 0);
+    }
+}
 
 void check_failures() {
     kk::storage::basic_columns<kk::storage::dynamic_layout<>, int, fragile> values;
@@ -88,6 +166,7 @@ int main() {
     static_assert(kk::buffer<kk::generator::iota, kk::eventsystem::dummy,
         kk::storage::dynamic_storage>::max_size == kk::storage::DynamicSizeUnlimited);
     check_failures();
+    check_resize();
 
     const std::string a(256, 'a'), b(256, 'b');
     kk::storage::basic_columns<kk::storage::dynamic_layout<64>, std::string, std::string> values;
