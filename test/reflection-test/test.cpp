@@ -37,8 +37,20 @@ struct movable_item {
     std::unique_ptr<int> value;
 };
 
+struct initialized_item {
+    std::array<float, 3> normal{0, 0, 1};
+    std::string name = "default";
+};
+
 template<template<typename, std::size_t, typename...> typename Storage>
 void check_integrated_buffer() {
+    kk::record_buffer<initialized_item, kk::generator::iota, kk::eventsystem::dummy, Storage, 4> initialized;
+    buffer_test::check(initialized.resize(2).has_value());
+    buffer_test::check(initialized.begin()->normal[2] == 1 && initialized.begin()->name == "default");
+    initialized.clear();
+    buffer_test::check(initialized.resize(1).has_value());
+    buffer_test::check(initialized.begin()->normal[2] == 1);
+
     using values_type = kk::record_buffer<item, kk::generator::iota, kk::eventsystem::dummy, Storage, 4>;
     static_assert(std::is_same_v<values_type,
         kk::buffer<kk::generator::iota, kk::eventsystem::dummy, Storage, 4, kk::record<item>>>);
