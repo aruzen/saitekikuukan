@@ -26,6 +26,7 @@
 #include <optional>
 #include <ranges>
 #include <source_location>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -674,9 +675,26 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             template<typename Columns>
             static constexpr fields<Columns> row(Columns&, std::size_t) { return {}; }
 
+            static consteval void validate_buffer_names() {}
+
             template<typename Value, typename Function>
             static constexpr decltype(auto) apply_value(Value&& value, Function&& function) {
                 return std::apply(std::forward<Function>(function), std::forward<Value>(value));
+            }
+
+            template<typename Columns>
+            static constexpr auto reference(Columns& columns, std::size_t index) {
+                return [&]<std::size_t... Indices>(std::index_sequence<Indices...>) {
+                    return std::tuple<decltype(column<Indices>(columns)[index])...>{column<Indices>(columns)[index]...};
+                }(std::index_sequence_for<Types...>{});
+            }
+
+            template<typename Columns>
+            static constexpr auto views(Columns& columns, std::size_t size) {
+                return [&]<std::size_t... Indices>(std::index_sequence<Indices...>) {
+                    return std::tuple{std::views::counted(std::ranges::begin(column<Indices>(columns)),
+                        static_cast<std::ptrdiff_t>(size))...};
+                }(std::index_sequence_for<Types...>{});
             }
         };
 
@@ -699,7 +717,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             static constexpr auto members = std::define_static_array(
                 std::meta::nonstatic_data_members_of(^^Record, std::meta::access_context::current()));
 
-            consteval {
+            static consteval void validate_buffer_names() {
                 for (auto member : members) {
                     auto name = std::meta::identifier_of(member);
                     if (name == "id" || name == "get" || name == "parent" || name == "index")
@@ -723,6 +741,34 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             template<typename Columns>
             static constexpr fields<Columns> row(Columns& columns, std::size_t index) {
                 return storage::reflection_detail::row_access<Columns>::get(columns, index);
+            }
+
+            template<typename Columns>
+            static constexpr auto reference(Columns& columns, std::size_t index) { return row(columns, index); }
+
+            template<bool Const>
+            struct view_column {
+                template<typename Column>
+                using type = decltype(std::views::counted(std::ranges::begin(std::declval<
+                    std::conditional_t<Const, const Column, Column>&>()), std::ptrdiff_t{}));
+            };
+
+            template<typename Columns>
+            static constexpr auto views(Columns& columns, std::size_t size) {
+                using access = storage::reflection_detail::row_access<Columns>;
+                using view_type = storage::soa<std::remove_const_t<Columns>,
+                    view_column<std::is_const_v<Columns>>::template type>;
+                return [&]<std::size_t... Indices>(std::index_sequence<Indices...>) {
+                    return view_type{std::views::counted(std::ranges::begin(column<Indices>(columns)),
+                        static_cast<std::ptrdiff_t>(size))...};
+                }(std::make_index_sequence<access::members.size()>{});
+            }
+
+            template<std::meta::info Member>
+            static consteval std::size_t member_index() {
+                for (std::size_t i = 0; i < members.size(); ++i)
+                    if (members[i] == Member) return i;
+                throw "The selected member must belong to this record";
             }
 
             template<typename Value, typename Function>
@@ -807,6 +853,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         };
 
         // ID やイベントに依存しない低水準の列管理。公開 entries の長さを直接変更しないこと。
+        // 通常利用では、所有列を隠してビューを返す basic_soa を使う。
         template<typename Layout, typename... Types>
         class basic_columns {
         public:
@@ -1006,6 +1053,33 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 }(std::make_index_sequence<element_types::size>{});
             }
 
+            template<size_t N> auto column() {
+                return std::views::counted(std::ranges::begin(get<N>()), static_cast<ptrdiff_t>(size()));
+            }
+            template<size_t N> auto column() const {
+                return std::views::counted(std::ranges::begin(get<N>()), static_cast<ptrdiff_t>(size()));
+            }
+            auto columns() { return schema_type::views(entries, size()); }
+            auto columns() const { return schema_type::views(entries, size()); }
+            auto row(size_t index) { return schema_type::reference(entries, index); }
+            auto row(size_t index) const { return schema_type::reference(entries, index); }
+
+            value_type read(size_t index) const requires std::is_copy_constructible_v<value_type> {
+                if (index >= size()) throw std::out_of_range("Row index exceeds size");
+                return [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                    return value_type{get<Indices>()[index]...};
+                }(std::make_index_sequence<element_types::size>{});
+            }
+
+            void write(size_t index, value_type value) {
+                if (index >= size()) throw std::out_of_range("Row index exceeds size");
+                schema_type::apply_value(std::move(value), [&](auto&&... fields) {
+                    data_tuple values(std::forward<decltype(fields)>(fields)...);
+                    [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                        ((get<Indices>()[index] = std::move_if_noexcept(std::get<Indices>(values))), ...);
+                    }(std::make_index_sequence<element_types::size>{});
+                });
+            }
         };
 
         template<typename Layout, typename IDType, typename... Types>
@@ -1134,6 +1208,143 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
     }
 
+    // ================================== soa ==================================
+    // 所有列を隠し、行数と列長を一体で管理する ID なしのコンテナ。
+    // 列ビューの要素は更新できるが、ビューから所有列の長さは変更できない。
+    template<typename Layout, typename... Types>
+    class basic_soa {
+        using storage_type = storage::basic_columns<Layout, Types...>;
+        using schema_type = typename storage_type::schema_type;
+        storage_type m_storage;
+
+        template<bool Const>
+        using parent_type = std::conditional_t<Const, const basic_soa, basic_soa>;
+
+    public:
+        using value_type = typename storage_type::value_type;
+        using element_types = typename storage_type::element_types;
+
+        template<bool Const>
+        class basic_iterator {
+            template<bool> friend class basic_iterator;
+            parent_type<Const>* m_parent = nullptr;
+            ptrdiff_t m_index = 0;
+
+        public:
+            using iterator_concept = std::random_access_iterator_tag;
+            using iterator_category = std::input_iterator_tag;
+            using difference_type = ptrdiff_t;
+            using reference = decltype(std::declval<parent_type<Const>&>()[size_t{}]);
+            using value_type = reference;
+            struct pointer {
+                reference row;
+                const reference* operator->() const { return std::addressof(row); }
+            };
+
+            basic_iterator() = default;
+            basic_iterator(parent_type<Const>* parent, difference_type index)
+                : m_parent(parent), m_index(index) {}
+            template<bool Other> requires (Const && !Other)
+            basic_iterator(const basic_iterator<Other>& other)
+                : m_parent(other.m_parent), m_index(other.m_index) {}
+
+            reference operator*() const { return (*m_parent)[static_cast<size_t>(m_index)]; }
+            pointer operator->() const { return {**this}; }
+            reference operator[](difference_type offset) const { return *(*this + offset); }
+            basic_iterator& operator++() { ++m_index; return *this; }
+            basic_iterator operator++(int) { auto old = *this; ++*this; return old; }
+            basic_iterator& operator--() { --m_index; return *this; }
+            basic_iterator operator--(int) { auto old = *this; --*this; return old; }
+            basic_iterator& operator+=(difference_type offset) { m_index += offset; return *this; }
+            basic_iterator& operator-=(difference_type offset) { m_index -= offset; return *this; }
+            friend basic_iterator operator+(basic_iterator it, difference_type n) { return it += n; }
+            friend basic_iterator operator+(difference_type n, basic_iterator it) { return it += n; }
+            friend basic_iterator operator-(basic_iterator it, difference_type n) { return it -= n; }
+            friend difference_type operator-(basic_iterator a, basic_iterator b) { return a.m_index - b.m_index; }
+            friend bool operator==(const basic_iterator&, const basic_iterator&) = default;
+            friend auto operator<=>(const basic_iterator&, const basic_iterator&) = default;
+        };
+
+        size_t size() const { return m_storage.size(); }
+        bool empty() const { return m_storage.empty(); }
+        size_t capacity() const { return m_storage.capacity(); }
+        size_t max_size() const { return m_storage.max_size(); }
+        void reserve(size_t count) { m_storage.reserve(count); }
+        void resize(size_t count) requires std::default_initializable<value_type> { m_storage.resize(count); }
+        void clear() { m_storage.clear(); }
+        void pop_back() { m_storage.pop_back(); }
+
+        void push_back(value_type value) { m_storage.push_value(std::move(value)); }
+        template<typename... Args> requires (sizeof...(Args) == element_types::size &&
+            !(sizeof...(Args) == 1 && (std::same_as<std::remove_cvref_t<Args>, value_type> && ...)))
+        void push_back(Args&&... args) { m_storage.push_back(std::forward<Args>(args)...); }
+
+        // 参照プロキシは行の値そのものではない。値のコピー・代入は read/write で明示する。
+        auto operator[](size_t index) { return m_storage.row(index); }
+        auto operator[](size_t index) const { return m_storage.row(index); }
+        auto at(size_t index) {
+            if (index >= size()) throw std::out_of_range("SoA row index");
+            return (*this)[index];
+        }
+        auto at(size_t index) const {
+            if (index >= size()) throw std::out_of_range("SoA row index");
+            return (*this)[index];
+        }
+        value_type read(size_t index) const requires std::is_copy_constructible_v<value_type> {
+            return m_storage.read(index);
+        }
+        void write(size_t index, value_type value) { m_storage.write(index, std::move(value)); }
+        void erase_unordered(size_t index) {
+            if (index >= size()) throw std::out_of_range("SoA row index");
+            if (index != size() - 1) m_storage.swap_rows(index, size() - 1);
+            pop_back();
+        }
+        void swap(basic_soa& other) noexcept(storage_type::nothrow_swap) { m_storage.swap(other.m_storage); }
+        friend void swap(basic_soa& a, basic_soa& b) noexcept(storage_type::nothrow_swap) { a.swap(b); }
+
+        template<size_t N> auto column() & { return m_storage.template column<N>(); }
+        template<size_t N> auto column() const & { return m_storage.template column<N>(); }
+        template<size_t N> auto column() && = delete;
+        template<size_t N> auto column() const && = delete;
+        template<size_t N> auto get() & { return column<N>(); }
+        template<size_t N> auto get() const & { return column<N>(); }
+        template<size_t N> auto get() && = delete;
+        template<size_t N> auto get() const && = delete;
+        auto columns() & { return m_storage.columns(); }
+        auto columns() const & { return m_storage.columns(); }
+        auto columns() && = delete;
+        auto columns() const && = delete;
+
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+        template<std::meta::info Member> auto column() & {
+            return column<schema_type::template member_index<Member>()>();
+        }
+        template<std::meta::info Member> auto column() const & {
+            return column<schema_type::template member_index<Member>()>();
+        }
+        template<std::meta::info Member> auto column() && = delete;
+        template<std::meta::info Member> auto column() const && = delete;
+#endif
+
+        using iterator = basic_iterator<false>;
+        using const_iterator = basic_iterator<true>;
+        iterator begin() { return {this, 0}; }
+        iterator end() { return {this, static_cast<ptrdiff_t>(size())}; }
+        const_iterator begin() const { return {this, 0}; }
+        const_iterator end() const { return {this, static_cast<ptrdiff_t>(size())}; }
+        const_iterator cbegin() const { return begin(); }
+        const_iterator cend() const { return end(); }
+    };
+
+    template<typename... Types>
+    using soa = basic_soa<storage::dynamic_layout<>, Types...>;
+    template<size_t Size, typename... Types>
+    using fixed_soa = basic_soa<storage::fixed_layout<Size>, Types...>;
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+    template<typename Record, typename Layout = storage::dynamic_layout<>>
+    using record_soa = basic_soa<Layout, record<Record>>;
+#endif
+
     // ================================= buffer ================================
     // ID・イベント・有効行数を管理する共通の buffer
     template<generator::is_generator IDGenerator = generator::iota,
@@ -1144,6 +1355,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
     struct buffer {
         using this_type = buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>;
         using schema_type = _detail::schema<Types...>;
+        static_assert([] { schema_type::validate_buffer_names(); return true; }());
         using element_types = typename schema_type::element_types;
         using id_type = typename IDGenerator::generate_type;
         using storage_type = Storage<id_type, MaxSize, Types...>;
@@ -1302,6 +1514,14 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
         [[nodiscard]] size_t size() const { return storage.size(); }
         [[nodiscard]] bool empty() const { return storage.empty(); }
+        template<size_t N> auto column() {
+            return std::views::counted(std::ranges::begin(get<N>()), static_cast<ptrdiff_t>(size()));
+        }
+        template<size_t N> auto column() const {
+            return std::views::counted(std::ranges::begin(get<N>()), static_cast<ptrdiff_t>(size()));
+        }
+        auto columns() { return schema_type::views(storage.entries, size()); }
+        auto columns() const { return schema_type::views(storage.entries, size()); }
         EventSystem& events() { return m_eventsystem; }
         const EventSystem& events() const { return m_eventsystem; }
 
