@@ -14,8 +14,8 @@ int main() {
     buffer<generator::iota, eventsystem::dummy, storage::static_storage, Size, int, int, int, int, int, int> enemies_of_array{};
     enemies_of_array.resize(Size);
     auto &[max_hp, hp, max_mp, mp, x, y] = enemies_of_array.storage.entries;
-    auto& elem_x = enemies_of_array.get<4>();
-    auto& elem_y = enemies_of_array.get<5>();
+    auto elem_x = enemies_of_array.get<4>();
+    auto elem_y = enemies_of_array.get<5>();
     auto [max_hp_p, hp_p, max_mp_p, mp_p, x_p, y_p] = std::make_tuple(reinterpret_cast<int*>(&max_hp), reinterpret_cast<int*>(&hp), reinterpret_cast<int*>(&max_mp), reinterpret_cast<int*>(&mp), reinterpret_cast<int*>(&x), reinterpret_cast<int*>(&y));
 
 
@@ -80,5 +80,6 @@ int main() {
         auto end = std::chrono::high_resolution_clock::now();
         std::println("{}µs", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
     }
+    std::println("{}, {}, {}, {}", x[Size - 1], y[Size - 1], array_of_enemies[Size - 1].x, array_of_enemies[Size - 1].y);
     return 0;
 }

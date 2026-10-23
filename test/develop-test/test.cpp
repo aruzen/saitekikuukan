@@ -12,8 +12,10 @@ int main() {
     ss.resize(Size);
     ds.resize(Size);
 
-    auto& [sa, sb, sc, sd, sx, sy] = ss.storage.entries;
-    auto& [da, db, dc, dd, dx, dy] = ds.storage.entries;
+    auto sx = ss.get<4>();
+    auto sy = ss.get<5>();
+    auto dx = ds.get<4>();
+    auto dy = ds.get<5>();
     auto [psx, psy] = std::make_tuple(sx.data(), sy.data());
     auto [pdx, pdy] = std::make_tuple(dx.data(), dy.data());
 

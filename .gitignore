@@ -1,6 +1,7 @@
 worktrees/
 cmake-build*/
 build/
+build-*/
 .idea/
 AGENTS.md
 by-codex/

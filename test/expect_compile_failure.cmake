@@ -1,0 +1,17 @@
+execute_process(COMMAND "${TEST_COMPILER}" -std=c++23 -fsyntax-only
+    "-I${TEST_INCLUDE}" "-DTEST_CASE=${TEST_CASE}" "${TEST_SOURCE}"
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error)
+if(result EQUAL 0)
+    message(FATAL_ERROR "Invalid schema unexpectedly compiled")
+endif()
+if(TEST_CASE EQUAL 2)
+    set(expected "Schema fields must belong to the row type")
+elseif(TEST_CASE EQUAL 3)
+    set(expected "bool columns require a contiguous byte type")
+else()
+    set(expected "The field must occur exactly once in Schema")
+endif()
+string(FIND "${error}" "${expected}" found)
+if(found EQUAL -1)
+    message(FATAL_ERROR "Compilation failed for a different reason:\n${output}\n${error}")
+endif()

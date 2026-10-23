@@ -24,6 +24,11 @@
 #include <vector>
 #include <tuple>
 #include <type_traits>
+#include <optional>
+#include <functional>
+#include <cstdint>
+#include <algorithm>
+#include "saitekikuukan/soa.hpp"
 
 namespace SAITEKIKUUKAN_NAMESPACE {
     namespace _meta {
@@ -71,12 +76,12 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             auto _filter() {
                 using added = N::template add<T>;
                 if constexpr (sizeof...(Types) == 0) {
-                    if constexpr (_apply_filter<Filter, T>)
+                    if constexpr (_apply_filter<Filter, T>())
                         return added();
                     else
                         return N();
                 } else {
-                    if constexpr (_apply_filter<Filter, T>)
+                    if constexpr (_apply_filter<Filter, T>())
                         return _filter<Filter, added, Types...>();
                     else
                         return _filter<Filter, N, Types...>();
@@ -103,12 +108,12 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             template<template<typename...> typename Filter, size_t Current, size_t Size, std::array<size_t, Size> Arr, typename T, typename ...Types>
             constexpr auto _filtered_index() {
                 if constexpr (sizeof...(Types) == 0) {
-                    if constexpr (_apply_filter<Filter, T>)
+                    if constexpr (_apply_filter<Filter, T>())
                         return _array_push_back<Current, Size>(Arr);
                     else
                         return Arr;
                 } else {
-                    if constexpr (_apply_filter<Filter, T>)
+                    if constexpr (_apply_filter<Filter, T>())
                         return _filtered_index<Filter,
                                 Current + 1, Size + 1, _array_push_back<Current, Size>(Arr), Types...>();
                     else
@@ -535,8 +540,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             T<size_t, 1, int>::default_max_size;
             T<size_t, 1, int>::max_size;
             typename T<size_t, 1, int>::id_type;
-            t.ids;
-            t.entries;
+            t.template get<0>();
+            tc.id_at(0);
 
             t.resize(std::declval<size_t>());
             t.push_back(std::declval<size_t>(), std::declval<int>());
@@ -567,74 +572,104 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
         constexpr size_t DynamicSizeUnlimited = SIZE_MAX;
 
-        template<typename IDType, size_t MaxSize = DynamicSizeUnlimited, typename ...Types>
-        struct dynamic_storage {
-            static constexpr size_t default_max_size = DynamicSizeUnlimited;
+        template<typename IDType, size_t MaxSize = DynamicSizeUnlimited, typename... Types>
+        class dynamic_storage {
+            DynamicColumns<IDType, Types...> _columns;
 
+        public:
+            static constexpr size_t default_max_size = DynamicSizeUnlimited;
             static constexpr size_t max_size = MaxSize;
             using id_type = IDType;
 
-            std::vector<id_type> ids;
-            typename dynamic_entries_type<Types...>::result entries;
-
-            size_t size() const {
-                return ids.size();
-            }
-
-            bool empty() const {
-                return ids.empty();
-            }
-
-            void clear() {
-                ids.clear();
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    ((std::get<Is>(entries).clear()), ...);
-                }(std::make_index_sequence<sizeof...(Types)>{});
-            }
-
-            std::expected<void, error_code> resize(size_t size) {
-                ids.resize(size);
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    ((std::get<Is>(entries).resize(size)), ...);
-                }(std::make_index_sequence<sizeof...(Types)>{});
-                return {};
-            }
-
-            template<typename ...Args>
-            std::expected<void, error_code> push_back(id_type id, Args &&... args) {
-                if (not id)
-                    return std::unexpected{error_code::generate_id_failed};
-                ids.push_back(id.value());
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    ((std::get<Is>(entries).push_back(std::forward<Args>(args))), ...);
-                }(std::make_index_sequence<sizeof...(Types)>{});
-                return {};
-            }
-
-            void pop_back() {
-                ids.pop_back();
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    ((std::get<Is>(entries).pop_back()), ...);
-                }(std::make_index_sequence<sizeof...(Types)>{});
-            }
-
-            std::expected<void, error_code> swap(size_t a_idx, size_t b_idx) {
-                if (size() < a_idx || size() < b_idx)
-                    return std::unexpected<error_code>{error_code::buffer_over};
-                std::swap(ids[a_idx], ids[b_idx]);
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (std::swap(std::get<Is>(entries)[a_idx], std::get<Is>(entries)[b_idx]), ...);
-                }(std::make_index_sequence<sizeof...(Types)>{});
-            }
-
-            std::expected<size_t, error_code> index(id_type id) const {
-                for (size_t i = 0; i < size(); i++) {
-                    if (ids[i] == id)
-                        return i;
-                }
-                return std::unexpected{error_code::not_found_id};
-            }
+            size_t size() const noexcept;
+            bool empty() const noexcept;
+            void clear() noexcept;
+            std::expected<void, error_code> resize(size_t count);
+            template<typename... Args>
+            std::expected<void, error_code> push_back(id_type id, Args&&... args);
+            void pop_back() noexcept;
+            std::expected<void, error_code> swap(size_t a_idx, size_t b_idx);
+            std::expected<size_t, error_code> index(id_type id) const;
+            id_type id_at(size_t index) const;
+            template<size_t Index>
+            auto get() noexcept;
+            template<size_t Index>
+            auto get() const noexcept;
         };
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        size_t dynamic_storage<IDType, MaxSize, Types...>::size() const noexcept {
+            return _columns.size();
+        }
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        bool dynamic_storage<IDType, MaxSize, Types...>::empty() const noexcept {
+            return _columns.empty();
+        }
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        void dynamic_storage<IDType, MaxSize, Types...>::clear() noexcept {
+            _columns.clear();
+        }
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        std::expected<void, error_code> dynamic_storage<IDType, MaxSize, Types...>::resize(size_t count) {
+            if (count > max_size)
+                return std::unexpected{error_code::buffer_over};
+            _columns.resize(count);
+            return {};
+        }
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        template<typename... Args>
+        std::expected<void, error_code> dynamic_storage<IDType, MaxSize, Types...>::push_back(id_type id, Args&&... args) {
+            if (size() == max_size)
+                return std::unexpected{error_code::buffer_over};
+            _columns.push_back(std::move(id), std::forward<Args>(args)...);
+            return {};
+        }
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        void dynamic_storage<IDType, MaxSize, Types...>::pop_back() noexcept {
+            _columns.pop_back();
+        }
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        std::expected<void, error_code> dynamic_storage<IDType, MaxSize, Types...>::swap(size_t a_idx, size_t b_idx) {
+            static_assert(std::is_nothrow_swappable_v<IDType> && (std::is_nothrow_swappable_v<Types> && ...));
+            if (a_idx >= size() || b_idx >= size())
+                return std::unexpected{error_code::out_of_range};
+            [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                (std::swap(_columns.template column<Indices>()[a_idx], _columns.template column<Indices>()[b_idx]), ...);
+            }(std::make_index_sequence<sizeof...(Types) + 1>{});
+            return {};
+        }
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        std::expected<size_t, error_code> dynamic_storage<IDType, MaxSize, Types...>::index(id_type id) const {
+            const auto ids = _columns.template column<0>();
+            const auto found = std::find(ids.begin(), ids.end(), id);
+            if (found == ids.end())
+                return std::unexpected{error_code::not_found_id};
+            return static_cast<size_t>(found - ids.begin());
+        }
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        IDType dynamic_storage<IDType, MaxSize, Types...>::id_at(size_t index) const {
+            return _columns.template column<0>()[index];
+        }
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        template<size_t Index>
+        auto dynamic_storage<IDType, MaxSize, Types...>::get() noexcept {
+            return _columns.template column<Index + 1>();
+        }
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        template<size_t Index>
+        auto dynamic_storage<IDType, MaxSize, Types...>::get() const noexcept {
+            return _columns.template column<Index + 1>();
+        }
 
         template<typename IDType, size_t MaxSize = 1024, typename ...Types>
         struct static_storage {
@@ -644,66 +679,119 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             using id_type = IDType;
 
         private:
-            size_t m_end_index = 0;
+            size_t _end_index = 0;
+
         public:
             std::array<id_type, max_size> ids;
             typename static_entries_type<max_size, Types...>::result entries;
 
-            size_t size() const {
-                return m_end_index;
-            }
+            size_t size() const;
 
-            bool empty() const {
-                return m_end_index == 0;
-            }
+            bool empty() const;
 
-            void clear() {
-                m_end_index = 0;
-            }
+            void clear();
 
-            std::expected<void, error_code> resize(size_t size) {
-                if (max_size < size) {
-                    return std::unexpected{error_code::buffer_over};
-                } else {
-                    this->m_end_index = size;
-                    return {};
-                }
-            }
+            std::expected<void, error_code> resize(size_t size);
 
-            template<typename ...Args>
-            std::expected<void, error_code> push_back(id_type id, Args &&... args) {
-                if (not id)
-                    return std::unexpected{error_code::generate_id_failed};
-                ids[m_end_index] = id.value();
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    ((std::get<Is>(entries)[m_end_index] = std::forward<Args>(args)), ...);
-                }(std::make_index_sequence<sizeof...(Types)>{});
-                m_end_index++;
+            template<typename... Args>
+            std::expected<void, error_code> push_back(id_type id, Args&&... args);
+
+            void pop_back();
+
+            std::expected<void, error_code> swap(size_t a_idx, size_t b_idx);
+
+            std::expected<size_t, error_code> index(id_type id) const;
+            id_type id_at(size_t index) const;
+
+            template<size_t Index>
+            auto get();
+
+            template<size_t Index>
+            auto get() const;
+        };
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        auto static_storage<IDType, MaxSize, Types...>::size() const -> size_t {
+            return _end_index;
+        }
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        auto static_storage<IDType, MaxSize, Types...>::empty() const -> bool {
+            return _end_index == 0;
+        }
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        auto static_storage<IDType, MaxSize, Types...>::clear() -> void {
+            _end_index = 0;
+        }
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        auto static_storage<IDType, MaxSize, Types...>::resize(size_t size) -> std::expected<void, error_code> {
+            if (max_size < size) {
+                return std::unexpected{error_code::buffer_over};
+            } else {
+                this->_end_index = size;
                 return {};
             }
+        }
 
-            void pop_back() {
-                if (0 < m_end_index)
-                    m_end_index--;
-            }
+        template<typename IDType, size_t MaxSize, typename... Types>
+        template<typename... Args>
+        auto static_storage<IDType, MaxSize, Types...>::push_back(id_type id, Args&&... args) -> std::expected<void, error_code> {
+            if (_end_index >= max_size)
+                return std::unexpected{error_code::buffer_over};
+            ids[_end_index] = id;
+            [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                ((std::get<Is>(entries)[_end_index] = std::forward<Args>(args)), ...);
+            }(std::make_index_sequence<sizeof...(Types)>{});
+            _end_index++;
+            return {};
+        }
 
-            std::expected<void, error_code> swap(size_t a_idx, size_t b_idx) {
-                if (max_size < a_idx || max_size < b_idx)
-                    return std::unexpected<error_code>{error_code::buffer_over};
-                std::swap(ids[a_idx], ids[b_idx]);
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (std::swap(std::get<Is>(entries)[a_idx], std::get<Is>(entries)[b_idx]), ...);
-                }(std::make_index_sequence<sizeof...(Types)>{});
-            }
+        template<typename IDType, size_t MaxSize, typename... Types>
+        auto static_storage<IDType, MaxSize, Types...>::pop_back() -> void {
+            if (0 < _end_index)
+                _end_index--;
+        }
 
-            std::expected<size_t, error_code> index(id_type id) const {
-                for (size_t i = 0; i < size(); i++) {
-                    if (ids[i] == id)
-                        return i;
-                }
-                return std::unexpected{error_code::not_found_id};
+        template<typename IDType, size_t MaxSize, typename... Types>
+        auto static_storage<IDType, MaxSize, Types...>::swap(size_t a_idx, size_t b_idx) -> std::expected<void, error_code> {
+            if (a_idx >= size() || b_idx >= size())
+                return std::unexpected<error_code>{error_code::buffer_over};
+            std::swap(ids[a_idx], ids[b_idx]);
+            [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                (std::swap(std::get<Is>(entries)[a_idx], std::get<Is>(entries)[b_idx]), ...);
+            }(std::make_index_sequence<sizeof...(Types)>{});
+            return {};
+        }
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        auto static_storage<IDType, MaxSize, Types...>::index(id_type id) const -> std::expected<size_t, error_code> {
+            for (size_t i = 0; i < size(); i++) {
+                if (ids[i] == id)
+                    return i;
             }
-        };
+            return std::unexpected{error_code::not_found_id};
+        }
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        auto static_storage<IDType, MaxSize, Types...>::id_at(size_t index) const -> id_type {
+            return ids[index];
+        }
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        template<size_t Index>
+        auto static_storage<IDType, MaxSize, Types...>::get() {
+            auto& values = std::get<Index>(entries);
+            return std::span{values.data(), size()};
+        }
+
+        template<typename IDType, size_t MaxSize, typename... Types>
+        template<size_t Index>
+        auto static_storage<IDType, MaxSize, Types...>::get() const {
+            const auto& values = std::get<Index>(entries);
+            return std::span{values.data(), size()};
+        }
     }
 
 // ==========================================================
@@ -721,135 +809,68 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         using element_types = _meta::type_list<Types...>;
 
         struct entry;
+        struct const_entry;
         struct iterator;
         struct const_iterator;
 
     private:
-        [[no_unique_address]] IDGenerator m_generator;
-        [[no_unique_address]] EventSystem m_eventsystem;
+        [[no_unique_address]] IDGenerator _generator;
+        [[no_unique_address]] EventSystem _eventsystem;
+
     public:
         Storage<id_type, max_size, Types...> storage;
 
         template<std::size_t N>
-        [[nodiscard]] auto &get() {
-            return std::get<N>(storage.entries);
-        }
+        [[nodiscard]] auto get();
 
         template<std::size_t N>
-        [[nodiscard]] const auto &get() const {
-            return std::get<N>(storage.entries);
-        }
+        [[nodiscard]] auto get() const;
 
-        [[nodiscard]] std::size_t size() const {
-            return storage.size();
-        }
+        [[nodiscard]] std::size_t size() const;
 
-        [[nodiscard]] bool empty() const {
-            return storage.empty();
-        }
+        [[nodiscard]] bool empty() const;
 
-        std::expected<size_t, error_code> index(id_type id) const {
-            return storage.index(id);
-        }
+        std::expected<size_t, error_code> index(id_type id) const;
 
-        std::expected<entry, error_code> operator[](id_type id) {
-            auto idx = index(id);
-            if (not idx.has_value())
-                return idx.error();
-            return entry{this, idx.value()};
-        }
+        std::expected<entry, error_code> operator[](id_type id);
 
-        std::expected<const entry, error_code> operator[](id_type id) const {
-            auto idx = index(id);
-            if (not idx.has_value())
-                return idx.error();
-            return entry{this, idx.value()};
-        }
+        std::expected<const_entry, error_code> operator[](id_type id) const;
 
         template<size_t N>
-        std::expected<typename element_types::template get<N> &, error_code> get(id_type id) {
-            auto idx = index(id);
-            if (not idx.has_value())
-                return idx.error();
-            return get<N>()[idx.value()];
-        }
+        std::expected<std::reference_wrapper<typename element_types::template get<N>>, error_code> get(id_type id);
 
         template<size_t N>
-        std::expected<const typename element_types::template get<N> &, error_code> get(id_type id) const {
-            auto idx = index(id);
-            if (not idx.has_value())
-                return idx.error();
-            return get<N>()[idx.value()];
-        }
+        std::expected<std::reference_wrapper<const typename element_types::template get<N>>, error_code> get(id_type id) const;
 
-        template<typename ...Args>
-        std::expected<void, error_code> push_back(Args &&... args) {
-            if (max_size < size() + 1)
-                return std::unexpected{error_code::buffer_over};
-            std::optional<id_type> id = m_generator.next();
-            std::tuple<Types...> data(std::forward<Args>(args)...);
+        template<typename... Args>
+        std::expected<void, error_code> push_back(Args&&... args);
 
-            m_eventsystem.
-            eventsystem::event::will_insert_event(id, data);
+        void pop_back();
 
-            storage.push_back(id, std::forward<Types>(args)...);
+        void clear();
 
-            eventsystem::event::did_insert_event(id, data);
+        std::expected<void, error_code> resize(size_t size);
 
-            return {};
-        }
+        std::expected<void, error_code> erase(id_type id);
 
-        void pop_back() {
-            storage.pop_back();
-        }
+        iterator begin();
 
-        void clear() {
-            storage.clear();
-        }
+        iterator end();
 
-        std::expected<void, error_code> resize(size_t size) {
-            return storage.resize(size);
-        }
+        const_iterator begin() const;
 
-        std::expected<void, error_code> erase(id_type id) {
-            auto idx = index(id);
-            if (idx.error())
-                return std::unexpected{error_code::not_found_id};
-            storage.swap(size(), idx);
-            storage.pop_back();
-            return {};
-        }
+        const_iterator end() const;
 
-        iterator begin() {
-            return iterator(this, 0);
-        }
+        const_iterator cbegin() const;
 
-        iterator end() {
-            return iterator(this, size());
-        }
-
-        const_iterator begin() const {
-            return const_iterator(this, 0);
-        }
-
-        const_iterator end() const {
-            return const_iterator(this, size());
-        }
-
-        const_iterator cbegin() const {
-            return const_iterator(this, 0);
-        }
-
-        const_iterator cend() const {
-            return const_iterator(this, size());
-        }
+        const_iterator cend() const;
 
         struct entry {
             this_type *parent;
             size_t index;
 
             id_type id() const {
-                return parent->storage.ids[index];
+                return parent->storage.id_at(index);
             }
 
             template<size_t N>
@@ -868,7 +889,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             size_t index;
 
             id_type id() const {
-                return parent->storage.ids[index];
+                return parent->storage.id_at(index);
             }
 
             template<size_t N>
@@ -884,8 +905,11 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             using pointer = entry *;
             using reference = entry;
         private:
-            entry m_entry;
+            entry m_entry{};
+
         public:
+            iterator() = default;
+
             iterator(this_type *parent, size_t index) : m_entry{parent, index} {};
 
             iterator(const iterator &) = default;
@@ -896,7 +920,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 return m_entry;
             }
 
-            pointer operator->() const {
+            const value_type* operator->() const {
                 return &m_entry;
             }
 
@@ -941,11 +965,11 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             }
 
             explicit operator bool() const {
-                return m_entry.index <= m_entry.parent->size();
+                return m_entry.parent && m_entry.index <= m_entry.parent->size();
             }
 
             bool operator!() const {
-                return m_entry.parent->size() < m_entry.index;
+                return !static_cast<bool>(*this);
             }
 
             friend iterator operator+(const iterator &itr, difference_type diff) {
@@ -961,21 +985,15 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             }
 
             friend difference_type operator-(const iterator &l, const iterator &r) {
-                return l.m_entry.index - r.m_entry.index;
+                return static_cast<difference_type>(l.m_entry.index) - static_cast<difference_type>(r.m_entry.index);
             }
 
             friend bool operator==(const iterator &l, const iterator &r) {
-                if ((bool) l && (bool) r && l.m_entry.index == r.m_entry.index)
-                    return true;
-                return false;
+                return l.m_entry.parent == r.m_entry.parent && l.m_entry.index == r.m_entry.index;
             }
 
             friend bool operator!=(const iterator &l, const iterator &r) {
-                if ((bool) l != (bool) r)
-                    return true;
-                if ((!l && !r) || l.m_entry.index != r.m_entry.index)
-                    return true;
-                return false;
+                return !(l == r);
             }
 
             friend bool operator<(const iterator &l, const iterator &r) {
@@ -989,6 +1007,10 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             friend bool operator>(const iterator &l, const iterator &r) {
                 return l.m_entry.index > r.m_entry.index;
             }
+
+            friend bool operator>=(const iterator& l, const iterator& r) {
+                return l.m_entry.index >= r.m_entry.index;
+            }
         };
 
         struct const_iterator {
@@ -996,10 +1018,14 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             using value_type = const_entry;
             using difference_type = ptrdiff_t;
             using pointer = const_entry *;
-            using reference = const const_entry &;
+            using reference = const_entry;
+
         private:
-            const_entry m_entry;
+            const_entry m_entry{};
+
         public:
+            const_iterator() = default;
+
             const_iterator(const this_type *parent, size_t index) : m_entry{parent, index} {};
 
             const_iterator(const const_iterator &) = default;
@@ -1010,7 +1036,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 return m_entry;
             }
 
-            pointer operator->() const {
+            const value_type* operator->() const {
                 return &m_entry;
             }
 
@@ -1047,11 +1073,11 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             }
 
             explicit operator bool() const {
-                return m_entry.index <= m_entry.parent->size();
+                return m_entry.parent && m_entry.index <= m_entry.parent->size();
             }
 
             bool operator!() const {
-                return m_entry.parent->size() < m_entry.index;
+                return !static_cast<bool>(*this);
             }
 
             friend const_iterator operator+(const const_iterator &itr, difference_type diff) {
@@ -1067,21 +1093,15 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             }
 
             friend difference_type operator-(const const_iterator &l, const const_iterator &r) {
-                return l.m_entry.index - r.m_entry.index;
+                return static_cast<difference_type>(l.m_entry.index) - static_cast<difference_type>(r.m_entry.index);
             }
 
             friend bool operator==(const const_iterator &l, const const_iterator &r) {
-                if ((bool) l && (bool) r && l.m_entry.index == r.m_entry.index)
-                    return true;
-                return false;
+                return l.m_entry.parent == r.m_entry.parent && l.m_entry.index == r.m_entry.index;
             }
 
             friend bool operator!=(const const_iterator &l, const const_iterator &r) {
-                if ((bool) l != (bool) r)
-                    return true;
-                if ((!l && !r) || l.m_entry.index != r.m_entry.index)
-                    return true;
-                return false;
+                return !(l == r);
             }
 
             friend bool operator<(const const_iterator &l, const const_iterator &r) {
@@ -1095,8 +1115,201 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             friend bool operator>(const const_iterator &l, const const_iterator &r) {
                 return l.m_entry.index > r.m_entry.index;
             }
+
+            friend bool operator>=(const const_iterator& l, const const_iterator& r) {
+                return l.m_entry.index >= r.m_entry.index;
+            }
         };
     };
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    template<std::size_t N>
+    [[nodiscard]] auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::get() {
+        return storage.template get<N>();
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    template<std::size_t N>
+    [[nodiscard]] auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::get() const {
+        return storage.template get<N>();
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    [[nodiscard]] auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::size() const -> std::size_t {
+        return storage.size();
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    [[nodiscard]] auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::empty() const -> bool {
+        return storage.empty();
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::index(id_type id) const -> std::expected<size_t, error_code> {
+        return storage.index(id);
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::operator[](id_type id) -> std::expected<entry, error_code> {
+        auto idx = index(id);
+        if (not idx.has_value())
+            return std::unexpected{idx.error()};
+        return entry{this, idx.value()};
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::operator[](id_type id) const -> std::expected<const_entry, error_code> {
+        auto idx = index(id);
+        if (not idx.has_value())
+            return std::unexpected{idx.error()};
+        return const_entry{this, idx.value()};
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    template<size_t N>
+    auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::get(id_type id) -> std::expected<std::reference_wrapper<typename element_types::template get<N>>, error_code> {
+        auto idx = index(id);
+        if (not idx.has_value())
+            return std::unexpected{idx.error()};
+        return std::ref(get<N>()[idx.value()]);
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    template<size_t N>
+    auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::get(id_type id) const -> std::expected<std::reference_wrapper<const typename element_types::template get<N>>, error_code> {
+        auto idx = index(id);
+        if (not idx.has_value())
+            return std::unexpected{idx.error()};
+        return std::ref(get<N>()[idx.value()]);
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    template<typename... Args>
+    auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::push_back(Args&&... args) -> std::expected<void, error_code> {
+        static_assert(std::same_as<EventSystem, eventsystem::dummy>, "Event dispatch is not implemented");
+        if (size() >= max_size)
+            return std::unexpected{error_code::buffer_over};
+        auto id = _generator.next();
+        if (!id)
+            return std::unexpected{error_code::generate_id_failed};
+        return storage.push_back(*id, std::forward<Args>(args)...);
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::pop_back() -> void {
+        storage.pop_back();
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::clear() -> void {
+        storage.clear();
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::resize(size_t size) -> std::expected<void, error_code> {
+        if (size > max_size)
+            return std::unexpected{error_code::buffer_over};
+        const auto old = this->size();
+        try {
+            while (this->size() < size) {
+                const auto result = push_back(Types{}...);
+                if (!result) {
+                    while (this->size() > old)
+                        pop_back();
+                    return result;
+                }
+            }
+        } catch (...) {
+            while (this->size() > old)
+                pop_back();
+            throw;
+        }
+        while (this->size() > size)
+            pop_back();
+        return {};
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::erase(id_type id) -> std::expected<void, error_code> {
+        auto idx = index(id);
+        if (!idx)
+            return std::unexpected{idx.error()};
+        const auto result = storage.swap(size() - 1, *idx);
+        if (!result)
+            return result;
+        storage.pop_back();
+        return {};
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::begin() -> iterator {
+        return iterator(this, 0);
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::end() -> iterator {
+        return iterator(this, size());
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::begin() const -> const_iterator {
+        return const_iterator(this, 0);
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::end() const -> const_iterator {
+        return const_iterator(this, size());
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::cbegin() const -> const_iterator {
+        return const_iterator(this, 0);
+    }
+
+    template<generator::is_generator IDGenerator, eventsystem::is_eventsystem EventSystem,
+             template<typename, size_t, typename...> typename Storage, size_t MaxSize, typename... Types>
+    requires storage::is_storage<Storage>
+    auto buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>::cend() const -> const_iterator {
+        return const_iterator(this, size());
+    }
 
     /*
     template<generator::is_generator G, eventsystem::is_eventsystem E, size_t ChunkSize = 16, typename ...Types>
