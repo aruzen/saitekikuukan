@@ -16,7 +16,7 @@
   - `if constexpr` と `concepts` による安全で可読性の高いコード
 
 - **最新 C++ 機能対応** ✅  
-  - C++26 でビルド。リフレクション機能には対応コンパイラが必要
+  - 型パック版は C++23、構造体の自動展開は C++26 リフレクションに対応
   - `std::expected`, `constexpr`, `concepts` を活用
 
 - **省メモリ設計** ✅  
@@ -35,6 +35,10 @@
 ## インストール
 
 ヘッダオンリーなので、プロジェクトに `include/saitekikuukan.hpp` をコピーしてください！
+
+`add_subdirectory`、またはインストール後の `find_package(saitekikuukan CONFIG REQUIRED)` にも対応します。
+通常は `saitekikuukan::saitekikuukan`、構造体を自動展開する場合は `saitekikuukan::reflection` をリンクします。
+親プロジェクトの C++ バージョンや最適化フラグは変更しません。
 
 ## 構造体を buffer のスキーマにする（C++26）
 

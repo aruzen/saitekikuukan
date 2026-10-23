@@ -1,5 +1,4 @@
 add_executable(reflection-test test.cpp)
-target_include_directories(reflection-test PRIVATE ../../include)
-target_compile_options(reflection-test PRIVATE $<$<CXX_COMPILER_ID:GNU>:-freflection>)
+target_link_libraries(reflection-test PRIVATE saitekikuukan::reflection)
 
 add_test(NAME reflection-test COMMAND reflection-test)
