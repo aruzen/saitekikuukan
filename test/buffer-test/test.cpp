@@ -71,6 +71,15 @@ void check_strategy() {
 
 int main() {
     using namespace kk;
+    // 条件式の評価と、空・同型を含む型リストの処理を確認する。
+    using list = type_list<int, float, long, int>;
+    static_assert(std::same_as<list::filter<std::is_integral>, type_list<int, long, int>>);
+    static_assert(list::filtered_index<std::is_integral>() == std::array<std::size_t, 3>{0, 2, 3});
+    static_assert(type_list<>::filter<std::is_integral>::size == 0);
+    static_assert(type_list<>::filtered_index<std::is_integral>().empty());
+    static_assert(type_list<float>::filter<std::is_integral>::size == 0);
+    static_assert(std::same_as<_meta::helper::concat_t<type_list<int>, type_list<float>, type_list<long>>,
+        type_list<int, float, long>>);
     check_strategy<storage::static_storage>();
     check_strategy<storage::dynamic_storage>();
     check_strategy<legacy_storage>();
