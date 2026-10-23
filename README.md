@@ -60,6 +60,27 @@ kk::storage::for_each_column(dynamic, [](auto& column) { column.resize(1024); })
 dynamic.x[0] = 2.0f;
 ```
 
+Use `rows(storage)` to iterate over rows. It provides `begin()` / `end()` and random access;
+each row holds references or proxies to the original column elements under the same member names.
+
+```cpp
+auto rows = kk::storage::rows(storage);
+rows.begin()->x += 1.0f;
+auto row = *rows.begin();
+row.name = "updated";
+
+for (auto row : rows) {
+    row.x += 1.0f;
+    row.y += 2.0f;
+}
+
+auto readonly = kk::storage::rows(std::as_const(storage));
+```
+
+Even with `auto row`, member updates write back to the columns. Const storage uses each column's const element access.
+Iteration stops at the shortest column; an empty schema has zero rows.
+Recreate the view after resizing columns. Constructing a view from temporary storage is rejected.
+
 `static_soa` uses `std::array`; `dynamic_soa` uses `std::vector`.
 Use `kk::storage::soa<Record, Column>` for a custom column container template.
 This API generates column storage only; it does not include the existing `buffer` ID or event handling.

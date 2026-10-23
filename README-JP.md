@@ -60,6 +60,27 @@ kk::storage::for_each_column(dynamic, [](auto& column) { column.resize(1024); })
 dynamic.x[0] = 2.0f;
 ```
 
+行単位の走査には `rows(storage)` を使います。`begin()` / `end()` とランダムアクセスに対応し、
+各行は元の列要素への参照／プロキシを、同じメンバ名で保持します。
+
+```cpp
+auto rows = kk::storage::rows(storage);
+rows.begin()->x += 1.0f;
+auto row = *rows.begin();
+row.name = "updated";
+
+for (auto row : rows) {
+    row.x += 1.0f;
+    row.y += 2.0f;
+}
+
+auto readonly = kk::storage::rows(std::as_const(storage));
+```
+
+`auto row` で受けても変更は元の列に反映されます。const なストレージでは列の const アクセス結果を使います。
+可変長の列の長さが異なる場合は最短の列長まで走査し、メンバのない構造体は 0 行として扱います。
+列を resize した場合はビューを取得し直してください。一時的なストレージからのビュー生成は拒否します。
+
 固定長版は `std::array`、可変長版は `std::vector` を生成します。
 独自の列コンテナには `kk::storage::soa<Record, Column>` を使えます。
 列ストレージだけを生成する API で、既存の `buffer` の ID 管理やイベント処理は含みません。
