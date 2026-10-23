@@ -211,6 +211,31 @@ ctest --test-dir build/reflection --output-on-failure
 
 ---
 
+## 性能の継続確認
+
+`tools/performance_report.py` は、動的 SoA と直接の vector を同じ入力で比較します。
+確保済み容量での `clear→resize`・`clear→push_back` と、列・行・`read/write` の走査を計測します。
+各操作の結果を全行検査し、初回の容量確保を除いた ns/行の中央値を CSV に保存します。
+
+```sh
+python3 tools/performance_report.py --compiler clang++
+python3 tools/performance_report.py --compiler g++-16 --reflection
+```
+
+`--rows`・`--iterations`・`--samples` で入力と反復数、`--levels O3` で最適化レベルを選べます。
+既定値は 262144 行・24 回・7 試行、最適化レベルは `-O2` / `-O3` です。
+`--include-dir` に比較対象の版の include ディレクトリを指定すれば、同じ計測コードで旧版も測れます。
+`--output` の既定値は `build/performance` で、生成コード・ベクトル化診断・コンパイラと引数・ソースのハッシュも保存します。
+reflection を使う場合は、通常の構造体とメンバ初期化子のある構造体を別々に計測します。
+
+CMake では `SAITEKIKUUKAN_BUILD_BENCHMARKS=ON` で `performance-benchmark` をビルドできます。
+reflection のテストも有効な場合は `performance-reflection-benchmark` が加わります。
+計測対象は別翻訳単位に分け、LTO による計測処理全体の定数畳み込みを避けています。
+
+CI は Clang の C++23 と GCC 16 の reflection をサニタイザ付きで検証し、最適化別の性能レポートを artifact に保存します。
+共有ランナーの速度変動があるため、時間の固定閾値では失敗させず、CSV と生成コードで退行を確認します。
+速度はサニタイザなしの実行で比較し、コンパイラ・入力・マシン条件を揃えてください。
+
 ## 将来的な機能 (チェックリスト)
 
 - [ ] SIMD 最適化  

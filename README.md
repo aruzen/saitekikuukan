@@ -205,6 +205,25 @@ ctest --test-dir build/reflection --output-on-failure
 
 ---
 
+## Performance reports
+
+Run `python3 tools/performance_report.py --compiler clang++`, or use
+`--compiler g++-16 --reflection` to include reflected records with and without member initializers.
+The script compares reserved `clear/resize`, reserved `clear/push_back`, and column/row/read-write
+updates against direct vectors. Every result is checked across all rows.
+
+Defaults are 262144 rows, 24 iterations, 7 samples, and both `-O2` and `-O3`.
+Use `--rows`, `--iterations`, `--samples`, and `--levels O3` to adjust the run.
+`--include-dir` selects another version's headers for comparison with the same benchmark sources.
+`--output` defaults to `build/performance` and stores median ns/row CSV files, assembly,
+vectorization diagnostics, compiler arguments, and source hashes.
+
+With `SAITEKIKUUKAN_BUILD_BENCHMARKS=ON`, CMake also builds `performance-benchmark`;
+enabling reflection tests adds `performance-reflection-benchmark`.
+Kernels use separate translation units without LTO to keep the measured work from being folded away.
+CI runs sanitizer tests on Clang/C++23 and GCC 16/reflection, then uploads unsanitized performance reports.
+Shared-runner timings have no fixed pass/fail threshold; compare CSV and generated code under matching conditions.
+
 ## Future Features (Checklist)
 
 - [ ] SIMD Optimization  
