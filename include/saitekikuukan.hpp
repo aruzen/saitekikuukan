@@ -1260,6 +1260,61 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
     }
 
+    // =============================== iteration ===============================
+    // 行インデックスと参照の取り出し方を分離し、列やチャンクの走査でも共有する。
+    namespace _detail {
+        struct indexed_access {
+            template<typename Parent>
+            static constexpr decltype(auto) get(Parent& parent, size_t index) { return parent[index]; }
+        };
+
+        template<typename Parent, typename Access = indexed_access>
+        class indexed_iterator {
+            template<typename, typename> friend class indexed_iterator;
+            Parent* m_parent = nullptr;
+            ptrdiff_t m_index = 0;
+
+        public:
+            using iterator_concept = std::random_access_iterator_tag;
+            using difference_type = ptrdiff_t;
+            using reference = decltype(Access::get(std::declval<Parent&>(), size_t{}));
+            using value_type = std::remove_cvref_t<reference>;
+            using iterator_category = std::conditional_t<std::is_lvalue_reference_v<reference>,
+                std::random_access_iterator_tag, std::input_iterator_tag>;
+            struct arrow_proxy {
+                value_type row;
+                constexpr const value_type* operator->() const { return std::addressof(row); }
+            };
+            using pointer = std::conditional_t<std::is_lvalue_reference_v<reference>,
+                std::add_pointer_t<std::remove_reference_t<reference>>, arrow_proxy>;
+
+            constexpr indexed_iterator() = default;
+            constexpr indexed_iterator(Parent* parent, difference_type index) : m_parent(parent), m_index(index) {}
+            template<typename Other> requires std::is_convertible_v<Other*, Parent*>
+            constexpr indexed_iterator(const indexed_iterator<Other, Access>& other)
+                : m_parent(other.m_parent), m_index(other.m_index) {}
+
+            constexpr reference operator*() const { return Access::get(*m_parent, static_cast<size_t>(m_index)); }
+            constexpr pointer operator->() const {
+                if constexpr (std::is_lvalue_reference_v<reference>) return std::addressof(**this);
+                else return {**this};
+            }
+            constexpr reference operator[](difference_type offset) const { return *(*this + offset); }
+            constexpr indexed_iterator& operator++() { ++m_index; return *this; }
+            constexpr indexed_iterator operator++(int) { auto old = *this; ++*this; return old; }
+            constexpr indexed_iterator& operator--() { --m_index; return *this; }
+            constexpr indexed_iterator operator--(int) { auto old = *this; --*this; return old; }
+            constexpr indexed_iterator& operator+=(difference_type offset) { m_index += offset; return *this; }
+            constexpr indexed_iterator& operator-=(difference_type offset) { m_index -= offset; return *this; }
+            friend constexpr indexed_iterator operator+(indexed_iterator it, difference_type n) { return it += n; }
+            friend constexpr indexed_iterator operator+(difference_type n, indexed_iterator it) { return it += n; }
+            friend constexpr indexed_iterator operator-(indexed_iterator it, difference_type n) { return it -= n; }
+            friend constexpr difference_type operator-(indexed_iterator a, indexed_iterator b) { return a.m_index - b.m_index; }
+            friend constexpr bool operator==(const indexed_iterator&, const indexed_iterator&) = default;
+            friend constexpr auto operator<=>(const indexed_iterator&, const indexed_iterator&) = default;
+        };
+    }
+
     // ================================== soa ==================================
     // 所有列を隠し、行数と列長を一体で管理する ID なしのコンテナ。
     // 列ビューの要素は更新できるが、ビューから所有列の長さは変更できない。
@@ -1277,45 +1332,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         using element_types = typename storage_type::element_types;
 
         template<bool Const>
-        class basic_iterator {
-            template<bool> friend class basic_iterator;
-            parent_type<Const>* m_parent = nullptr;
-            ptrdiff_t m_index = 0;
-
-        public:
-            using iterator_concept = std::random_access_iterator_tag;
-            using iterator_category = std::input_iterator_tag;
-            using difference_type = ptrdiff_t;
-            using reference = decltype(std::declval<parent_type<Const>&>()[size_t{}]);
-            using value_type = reference;
-            struct pointer {
-                reference row;
-                const reference* operator->() const { return std::addressof(row); }
-            };
-
-            basic_iterator() = default;
-            basic_iterator(parent_type<Const>* parent, difference_type index)
-                : m_parent(parent), m_index(index) {}
-            template<bool Other> requires (Const && !Other)
-            basic_iterator(const basic_iterator<Other>& other)
-                : m_parent(other.m_parent), m_index(other.m_index) {}
-
-            reference operator*() const { return (*m_parent)[static_cast<size_t>(m_index)]; }
-            pointer operator->() const { return {**this}; }
-            reference operator[](difference_type offset) const { return *(*this + offset); }
-            basic_iterator& operator++() { ++m_index; return *this; }
-            basic_iterator operator++(int) { auto old = *this; ++*this; return old; }
-            basic_iterator& operator--() { --m_index; return *this; }
-            basic_iterator operator--(int) { auto old = *this; --*this; return old; }
-            basic_iterator& operator+=(difference_type offset) { m_index += offset; return *this; }
-            basic_iterator& operator-=(difference_type offset) { m_index -= offset; return *this; }
-            friend basic_iterator operator+(basic_iterator it, difference_type n) { return it += n; }
-            friend basic_iterator operator+(difference_type n, basic_iterator it) { return it += n; }
-            friend basic_iterator operator-(basic_iterator it, difference_type n) { return it -= n; }
-            friend difference_type operator-(basic_iterator a, basic_iterator b) { return a.m_index - b.m_index; }
-            friend bool operator==(const basic_iterator&, const basic_iterator&) = default;
-            friend auto operator<=>(const basic_iterator&, const basic_iterator&) = default;
-        };
+        using basic_iterator = _detail::indexed_iterator<parent_type<Const>>;
 
         size_t size() const { return m_storage.size(); }
         bool empty() const { return m_storage.empty(); }
