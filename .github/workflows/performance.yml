@@ -1,0 +1,58 @@
+name: Correctness and performance reports
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  clang:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build and test with sanitizers
+        run: |
+          cmake -S . -B build/check -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug '-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer'
+          cmake --build build/check --parallel 3
+          ctest --test-dir build/check --output-on-failure
+      - name: Record O2 and O3 performance
+        run: python3 tools/performance_report.py --compiler clang++ --rows 65536 --iterations 12 --samples 5
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: clang-performance
+          path: |
+            build/performance/*.csv
+            build/performance/*.s
+            build/performance/*.txt
+            build/performance/*.json
+
+  gcc-reflection:
+    runs-on: ubuntu-24.04
+    container: gcc:16.2.0
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends cmake ninja-build python3
+      - name: Build and test C++23 and reflection with sanitizers
+        run: |
+          cmake -S . -B build/check -G Ninja -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Debug -DSAITEKIKUUKAN_BUILD_REFLECTION_TESTS=ON '-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer'
+          cmake --build build/check --parallel 3
+          ctest --test-dir build/check --output-on-failure
+      - name: Record O2 and O3 performance with reflection
+        run: python3 tools/performance_report.py --compiler g++ --reflection --rows 65536 --iterations 12 --samples 5
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: gcc-reflection-performance
+          path: |
+            build/performance/*.csv
+            build/performance/*.s
+            build/performance/*.txt
+            build/performance/*.json
