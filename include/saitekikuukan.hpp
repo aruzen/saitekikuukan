@@ -1,6 +1,4 @@
-//
-// Created by morimoto_hibiki on 2025/08/16.
-//
+// 2025/08/16 morimoto_hibiki 作成。
 #pragma once
 
 #ifndef SAITEKIKUUKAN_HPP
@@ -10,22 +8,37 @@
 #define SAITEKIKUUKAN_NAMESPACE kk
 #endif
 
+// UUID ジェネレータを利用する場合に定義する。
 // #define HAS_BOOST_UUID
 
-// TODO: 最後にalphabet順に並び替えようかな今回は
+#include <algorithm>
 #include <array>
+#include <compare>
 #include <concepts>
 #include <coroutine>
+#include <cstddef>
 #include <exception>
 #include <expected>
-#include <string>
-#include <source_location>
+#include <functional>
+#include <iterator>
+#include <limits>
+#include <memory>
+#include <optional>
 #include <ranges>
-#include <vector>
+#include <source_location>
+#include <string>
 #include <tuple>
 #include <type_traits>
+#include <utility>
+#include <vector>
+
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+#include <meta>
+#endif
 
 namespace SAITEKIKUUKAN_NAMESPACE {
+    // ================================= _meta =================================
+    // 型リストとメタ関数
     namespace _meta {
         template<typename T>
         concept is_type_list = T::is_type_list_flag;
@@ -190,7 +203,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             using wrap = type_list<T<Types>...>;
 
             /*
-             * これのStartは価値がないが遅延評価させるtemplateのために必要
+             * Start は識別子の開始値。テンプレート引数として型の生成を遅延させる。
              */
             template<size_t Start = 0>
             using wrap_meta_id = decltype(helper::_append_id<Start, type_list<>, Types...>());
@@ -201,17 +214,18 @@ namespace SAITEKIKUUKAN_NAMESPACE {
     }
     using _meta::type_list;
 
-// ==========================================================
-
+    // =============================== error_code ==============================
+    // 操作結果を表すエラー
     enum class error_code {
         out_of_range,
         not_found_id,
         buffer_over,
-        generate_id_failed
+        generate_id_failed,
+        operation_canceled
     };
 
-// ==========================================================
-
+    // =============================== generator ===============================
+    // ID の生成方針
     namespace generator {
         template<typename T>
         concept is_generator = requires(T &t) {
@@ -288,9 +302,10 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 #endif
     }
 
-// ==========================================================
-
+    // ============================== eventsystem ==============================
+    // 操作前後のイベントとリスナ
     namespace eventsystem {
+        // will_* は操作前、did_* は操作完了後の通知を表す。
         namespace event {
             template<typename IDType, typename ...Types>
             struct will_insert_event {
@@ -421,18 +436,18 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         public:
             template<typename Event>
             listener_interface<Event> *add(listener_interface<Event> *listener) {
-                std::get<Event>(listeners).push_back(listener);
+                std::get<std::vector<listener_interface<Event>*>>(listeners).push_back(listener);
                 return listener;
             }
 
             template<typename Event>
             void remove(listener_interface<Event> *listener) {
-                std::remove(std::get<Event>(listeners).begin(), std::get<Event>(listeners).end(), listener);
+                std::erase(std::get<std::vector<listener_interface<Event>*>>(listeners), listener);
             }
 
             template<typename Event>
             void on(Event &e) {
-                for (auto &listener: std::get<Event>(listeners))
+                for (auto* listener: std::get<std::vector<listener_interface<Event>*>>(listeners))
                     listener->on(e);
             };
         };
@@ -445,23 +460,24 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         public:
             template<typename Event>
             listener_interface<Event> *add(listener_interface<Event> *listener) {
-                std::get<Event>(listeners) = listener;
+                std::get<listener_interface<Event>*>(listeners) = listener;
                 return listener;
             }
 
             template<typename Event>
             void remove() {
-                std::get<Event>(listeners) = nullptr;
+                std::get<listener_interface<Event>*>(listeners) = nullptr;
             }
 
             template<typename Event>
             void on(Event &e) {
-                std::get<Event>(listeners)->on(e);
+                if (auto* listener = std::get<listener_interface<Event>*>(listeners))
+                    listener->on(e);
             };
         };
 
         /*
-         * 実体を保持しない(EOB用)
+         * リスナを保持せず、通知時に一時生成する。
          */
         template<typename... Types>
         struct zero_cost {
@@ -469,11 +485,12 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         private:
             template<typename Event, size_t Idx>
             void apply(Event &e) {
-                using Listener = listener_types::template get<Idx>;
-                if constexpr (std::same_as<typename Listener::listen_event, Event>)
-                    Listener().on(e);
-                if constexpr (Idx < listener_types::size)
-                    apply_class<Event, Idx + 1>();
+                if constexpr (Idx < listener_types::size) {
+                    using Listener = listener_types::template get<Idx>;
+                    if constexpr (std::same_as<typename Listener::listen_event, Event>)
+                        Listener().on(e);
+                    apply<Event, Idx + 1>(e);
+                }
             }
 
         public:
@@ -484,7 +501,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         };
 
         /*
-         * 空クラスは実体を保持しない
+         * 状態を持つリスナだけを保持し、空のリスナは通知時に生成する。
          */
         template<typename... Types>
         struct minimum_cost {
@@ -527,8 +544,214 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         };
     }
 
-// ==========================================================
+    // =============================== reflection ==============================
+    // リフレクションによる列と行参照の生成
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+    namespace storage {
+        namespace reflection_detail {
+            template<std::size_t Size>
+            struct array_column {
+                template<typename T>
+                using type = std::array<T, Size>;
+            };
 
+            template<typename Record, template<typename> typename Column>
+            struct columns_type {
+                static_assert(std::is_aggregate_v<Record> && !std::is_union_v<Record>,
+                              "SoA records must be non-union aggregates");
+
+                struct type;
+
+                consteval {
+                    auto context = std::meta::access_context::current();
+                    if (!std::meta::bases_of(^^Record, context).empty())
+                        throw "SoA records must not have base classes";
+
+                    std::vector<std::meta::info> columns;
+                    for (auto member : std::meta::nonstatic_data_members_of(^^Record, context)) {
+                        if (std::meta::is_bit_field(member))
+                            throw "SoA records must not contain bit-fields";
+                        if (std::meta::is_reference_type(std::meta::type_of(member)))
+                            throw "SoA records must not contain reference members";
+
+                        auto column = std::meta::substitute(^^Column, {std::meta::type_of(member)});
+                        columns.push_back(std::meta::data_member_spec(column, {
+                            .name = std::meta::identifier_of(member)
+                        }));
+                    }
+                    std::meta::define_aggregate(^^type, columns);
+                }
+            };
+        }
+
+        // 元のメンバ名と宣言順を保った集成体として、列コンテナを直接保持する。
+        // 生成した型は構造化束縛でも扱える。
+        template<typename Record, template<typename> typename Column>
+        using soa = typename reflection_detail::columns_type<Record, Column>::type;
+
+        template<typename Record, std::size_t Size>
+        using static_soa = soa<Record, reflection_detail::array_column<Size>::template type>;
+
+        template<typename Record>
+        using dynamic_soa = soa<Record, std::vector>;
+
+        // 各列の型と const 性を保って処理を展開し、参照タプルや実行時の検索を省く。
+        template<typename Columns, typename Function>
+        constexpr void for_each_column(Columns& columns, Function&& function) {
+            template for (auto& column : columns) {
+                function(column);
+            }
+        }
+
+        namespace reflection_detail {
+            template<bool Const>
+            struct element_reference {
+                template<typename Column>
+                using type = decltype(std::declval<
+                    std::conditional_t<Const, const Column, Column>&>()[std::size_t{}]);
+            };
+
+            template<typename Columns>
+            struct row_access {
+                using columns_type = std::remove_const_t<Columns>;
+                using reference = soa<columns_type,
+                    element_reference<std::is_const_v<Columns>>::template type>;
+
+                static constexpr auto members = std::define_static_array(
+                    std::meta::nonstatic_data_members_of(^^columns_type,
+                        std::meta::access_context::current()));
+
+                static constexpr reference get(Columns& columns, std::size_t index) {
+                    return [&]<std::size_t... Indices>(std::index_sequence<Indices...>) {
+                        return reference{columns.[:members[Indices]:][index]...};
+                    }(std::make_index_sequence<members.size()>{});
+                }
+
+                static constexpr std::size_t size(const Columns& columns) {
+                    if constexpr (members.empty()) {
+                        return 0;
+                    } else {
+                        auto count = std::numeric_limits<std::size_t>::max();
+                        for_each_column(columns, [&](const auto& column) {
+                            count = std::min(count, static_cast<std::size_t>(column.size()));
+                        });
+                        return count;
+                    }
+                }
+            };
+
+        }
+    }
+#endif
+
+    // ================================= schema ================================
+    // 型パックと構造体に共通のスキーマ
+    // 構造体を一つの列として使う従来形式と区別するため、展開は record<T> で明示する。
+    template<typename Record>
+    struct record {};
+
+    namespace _detail {
+        struct unnamed_fields {};
+
+        template<typename T>
+        inline constexpr bool is_record = false;
+
+        template<typename T>
+        inline constexpr bool is_record<record<T>> = true;
+
+        template<typename... Types>
+        struct schema {
+            static_assert((!is_record<Types> && ...), "record<T> must be the only schema argument");
+            static constexpr bool named = false;
+            using element_types = type_list<Types...>;
+            using record_type = void;
+
+            template<template<typename> typename Column>
+            using columns = std::tuple<Column<Types>...>;
+
+            template<std::size_t N, typename Columns>
+            static constexpr decltype(auto) column(Columns& columns) {
+                return std::get<N>(columns);
+            }
+
+            template<typename Columns>
+            using fields = unnamed_fields;
+
+            template<typename Columns>
+            static constexpr fields<Columns> row(Columns&, std::size_t) { return {}; }
+        };
+
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+        template<typename Record>
+        consteval auto record_element_types() {
+            std::vector<std::meta::info> types;
+            for (auto member : std::meta::nonstatic_data_members_of(^^Record,
+                    std::meta::access_context::current()))
+                types.push_back(std::meta::type_of(member));
+            return std::meta::substitute(^^_meta::type_list, types);
+        }
+
+        template<typename Record>
+        struct schema<record<Record>> {
+            static constexpr bool named = true;
+            using record_type = Record;
+            using element_types = [:record_element_types<Record>():];
+            static constexpr auto members = std::define_static_array(
+                std::meta::nonstatic_data_members_of(^^Record, std::meta::access_context::current()));
+
+            consteval {
+                for (auto member : members) {
+                    auto name = std::meta::identifier_of(member);
+                    if (name == "id" || name == "get" || name == "parent" || name == "index")
+                        throw "Record member name conflicts with buffer entry API: id, get, parent, index";
+                }
+            }
+
+            template<template<typename> typename Column>
+            using columns = storage::soa<Record, Column>;
+
+            template<std::size_t N, typename Columns>
+            static constexpr decltype(auto) column(Columns& columns) {
+                using access = storage::reflection_detail::row_access<Columns>;
+                static_assert(N < access::members.size());
+                return (columns.[:access::members[N]:]);
+            }
+
+            template<typename Columns>
+            using fields = typename storage::reflection_detail::row_access<Columns>::reference;
+
+            template<typename Columns>
+            static constexpr fields<Columns> row(Columns& columns, std::size_t index) {
+                return storage::reflection_detail::row_access<Columns>::get(columns, index);
+            }
+
+            template<typename Value, typename Function>
+            static constexpr decltype(auto) apply_record(Value&& value, Function&& function) {
+                return [&]<std::size_t... Indices>(std::index_sequence<Indices...>) -> decltype(auto) {
+                    return std::invoke(std::forward<Function>(function),
+                        std::forward<Value>(value).[:members[Indices]:]...);
+                }(std::make_index_sequence<members.size()>{});
+            }
+        };
+#endif
+
+        // expected に参照を直接格納せず、通常の列は reference_wrapper で返す。
+        // vector<bool> などの列では、要素アクセスが返すプロキシ値をそのまま使う。
+        template<typename Reference>
+        using lookup_value = std::conditional_t<std::is_lvalue_reference_v<Reference>,
+            std::reference_wrapper<std::remove_reference_t<Reference>>, Reference>;
+
+        template<typename Value>
+        constexpr auto lookup_reference(Value&& value) {
+            if constexpr (std::is_lvalue_reference_v<Value>)
+                return std::ref(value);
+            else
+                return std::forward<Value>(value);
+        }
+    }
+
+    // ================================ storage ================================
+    // 列ストレージと固定長・可変長の管理
     namespace storage {
         template<template<typename, size_t, typename...> typename T>
         concept is_storage = requires(T<size_t, 1, int> t, const T<size_t, 1, int> tc) {
@@ -551,21 +774,17 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
         template<typename ...Types>
         struct dynamic_entries_type {
-            using tl = type_list<Types...>;
-            using vector = tl::template wrap<std::vector>;
-            // using meta_id = vector::template wrap_meta_id<0>;
-            using result = vector::template apply<std::tuple>;
+            using result = typename _detail::schema<Types...>::template columns<std::vector>;
         };
 
         template<size_t Size, typename ...Types>
         struct static_entries_type {
-            using tl = type_list<Types...>;
-            using array = tl::template wrap_array<Size>;
-            // using meta_id = array::template wrap_meta_id<0>;
-            using result = array::template apply<std::tuple>;
+            template<typename T>
+            using array = std::array<T, Size>;
+            using result = typename _detail::schema<Types...>::template columns<array>;
         };
 
-        constexpr size_t DynamicSizeUnlimited = SIZE_MAX;
+        constexpr size_t DynamicSizeUnlimited = std::numeric_limits<size_t>::max();
 
         template<typename IDType, size_t MaxSize = DynamicSizeUnlimited, typename ...Types>
         struct dynamic_storage {
@@ -573,9 +792,17 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
             static constexpr size_t max_size = MaxSize;
             using id_type = IDType;
+            using schema_type = _detail::schema<Types...>;
+            using element_types = typename schema_type::element_types;
 
             std::vector<id_type> ids;
             typename dynamic_entries_type<Types...>::result entries;
+
+            template<std::size_t N>
+            decltype(auto) get() { return schema_type::template column<N>(entries); }
+
+            template<std::size_t N>
+            decltype(auto) get() const { return schema_type::template column<N>(entries); }
 
             size_t size() const {
                 return ids.size();
@@ -588,43 +815,61 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             void clear() {
                 ids.clear();
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    ((std::get<Is>(entries).clear()), ...);
-                }(std::make_index_sequence<sizeof...(Types)>{});
+                    (get<Is>().clear(), ...);
+                }(std::make_index_sequence<element_types::size>{});
             }
 
             std::expected<void, error_code> resize(size_t size) {
-                ids.resize(size);
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    ((std::get<Is>(entries).resize(size)), ...);
-                }(std::make_index_sequence<sizeof...(Types)>{});
+                if (size > max_size)
+                    return std::unexpected{error_code::buffer_over};
+                auto old_size = this->size();
+                try {
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        (get<Is>().resize(size), ...);
+                    }(std::make_index_sequence<element_types::size>{});
+                    ids.resize(size);
+                } catch (...) {
+                    rollback(old_size);
+                    throw;
+                }
                 return {};
             }
 
             template<typename ...Args>
             std::expected<void, error_code> push_back(id_type id, Args &&... args) {
-                if (not id)
-                    return std::unexpected{error_code::generate_id_failed};
-                ids.push_back(id.value());
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    ((std::get<Is>(entries).push_back(std::forward<Args>(args))), ...);
-                }(std::make_index_sequence<sizeof...(Types)>{});
+                static_assert(sizeof...(Args) == element_types::size);
+                if (size() >= max_size)
+                    return std::unexpected{error_code::buffer_over};
+                auto old_size = size();
+                try {
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        (get<Is>().push_back(std::forward<Args>(args)), ...);
+                    }(std::make_index_sequence<element_types::size>{});
+                    ids.push_back(id);
+                } catch (...) {
+                    rollback(old_size);
+                    throw;
+                }
                 return {};
             }
 
             void pop_back() {
+                if (empty())
+                    return;
                 ids.pop_back();
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    ((std::get<Is>(entries).pop_back()), ...);
-                }(std::make_index_sequence<sizeof...(Types)>{});
+                    (get<Is>().pop_back(), ...);
+                }(std::make_index_sequence<element_types::size>{});
             }
 
             std::expected<void, error_code> swap(size_t a_idx, size_t b_idx) {
-                if (size() < a_idx || size() < b_idx)
+                if (a_idx >= size() || b_idx >= size())
                     return std::unexpected<error_code>{error_code::buffer_over};
                 std::swap(ids[a_idx], ids[b_idx]);
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (std::swap(std::get<Is>(entries)[a_idx], std::get<Is>(entries)[b_idx]), ...);
-                }(std::make_index_sequence<sizeof...(Types)>{});
+                    (std::swap(get<Is>()[a_idx], get<Is>()[b_idx]), ...);
+                }(std::make_index_sequence<element_types::size>{});
+                return {};
             }
 
             std::expected<size_t, error_code> index(id_type id) const {
@@ -634,6 +879,15 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 }
                 return std::unexpected{error_code::not_found_id};
             }
+
+        private:
+            void rollback(size_t size) {
+                while (ids.size() > size)
+                    ids.pop_back();
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    ([&] { while (get<Is>().size() > size) get<Is>().pop_back(); }(), ...);
+                }(std::make_index_sequence<element_types::size>{});
+            }
         };
 
         template<typename IDType, size_t MaxSize = 1024, typename ...Types>
@@ -642,12 +896,20 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
             static constexpr size_t max_size = MaxSize;
             using id_type = IDType;
+            using schema_type = _detail::schema<Types...>;
+            using element_types = typename schema_type::element_types;
 
         private:
             size_t m_end_index = 0;
         public:
             std::array<id_type, max_size> ids;
             typename static_entries_type<max_size, Types...>::result entries;
+
+            template<std::size_t N>
+            decltype(auto) get() { return schema_type::template column<N>(entries); }
+
+            template<std::size_t N>
+            decltype(auto) get() const { return schema_type::template column<N>(entries); }
 
             size_t size() const {
                 return m_end_index;
@@ -672,12 +934,13 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
             template<typename ...Args>
             std::expected<void, error_code> push_back(id_type id, Args &&... args) {
-                if (not id)
-                    return std::unexpected{error_code::generate_id_failed};
-                ids[m_end_index] = id.value();
+                static_assert(sizeof...(Args) == element_types::size);
+                if (size() >= max_size)
+                    return std::unexpected{error_code::buffer_over};
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    ((std::get<Is>(entries)[m_end_index] = std::forward<Args>(args)), ...);
-                }(std::make_index_sequence<sizeof...(Types)>{});
+                    ((get<Is>()[m_end_index] = std::forward<Args>(args)), ...);
+                }(std::make_index_sequence<element_types::size>{});
+                ids[m_end_index] = id;
                 m_end_index++;
                 return {};
             }
@@ -688,12 +951,13 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             }
 
             std::expected<void, error_code> swap(size_t a_idx, size_t b_idx) {
-                if (max_size < a_idx || max_size < b_idx)
+                if (a_idx >= size() || b_idx >= size())
                     return std::unexpected<error_code>{error_code::buffer_over};
                 std::swap(ids[a_idx], ids[b_idx]);
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (std::swap(std::get<Is>(entries)[a_idx], std::get<Is>(entries)[b_idx]), ...);
-                }(std::make_index_sequence<sizeof...(Types)>{});
+                    (std::swap(get<Is>()[a_idx], get<Is>()[b_idx]), ...);
+                }(std::make_index_sequence<element_types::size>{});
+                return {};
             }
 
             std::expected<size_t, error_code> index(id_type id) const {
@@ -706,398 +970,300 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         };
     }
 
-// ==========================================================
-
+    // ================================= buffer ================================
+    // ID・イベント・有効行数を管理する共通の buffer
     template<generator::is_generator IDGenerator = generator::iota,
             eventsystem::is_eventsystem EventSystem = eventsystem::dummy,
-            template<typename, size_t, typename...> typename Storage  = storage::static_storage,
+            template<typename, size_t, typename...> typename Storage = storage::static_storage,
             size_t MaxSize = Storage<size_t, 1, int>::default_max_size,
-            typename ...Types> requires storage::is_storage<Storage>
+            typename... Types> requires storage::is_storage<Storage>
     struct buffer {
         using this_type = buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>;
-
-        static constexpr size_t max_size = MaxSize;
+        using schema_type = _detail::schema<Types...>;
+        using element_types = typename schema_type::element_types;
         using id_type = typename IDGenerator::generate_type;
-        using element_types = _meta::type_list<Types...>;
+        using storage_type = Storage<id_type, MaxSize, Types...>;
+        using columns_type = decltype(std::declval<storage_type&>().entries);
+        static constexpr size_t max_size = MaxSize;
 
-        struct entry;
-        struct iterator;
-        struct const_iterator;
+        template<bool Const>
+        using parent_type = std::conditional_t<Const, const this_type, this_type>;
+
+        template<bool Const>
+        using fields_type = typename schema_type::template fields<
+            std::conditional_t<Const, const columns_type, columns_type>>;
+
+        // 型パック形式では空の基底、record 形式では同名メンバへの参照を継承する。
+        template<bool Const>
+        struct basic_entry : fields_type<Const> {
+            parent_type<Const>* parent;
+            size_t index;
+
+            basic_entry(parent_type<Const>* parent, size_t index)
+                : fields_type<Const>(schema_type::row(parent->storage.entries, index)),
+                  parent(parent), index(index) {}
+
+            id_type id() const { return parent->storage.ids[index]; }
+
+            template<size_t N>
+            decltype(auto) get() { return parent->template get<N>()[index]; }
+
+            template<size_t N>
+            decltype(auto) get() const { return std::as_const(*parent).template get<N>()[index]; }
+        };
+
+        using entry = basic_entry<false>;
+        using const_entry = basic_entry<true>;
+
+        // const 性だけを切り替え、通常・const イテレータで同じ操作を共有する。
+        template<bool Const>
+        class basic_iterator {
+            template<bool> friend class basic_iterator;
+            parent_type<Const>* m_parent = nullptr;
+            ptrdiff_t m_index = 0;
+
+        public:
+            using iterator_concept = std::random_access_iterator_tag;
+            using iterator_category = std::conditional_t<schema_type::named,
+                std::input_iterator_tag, std::random_access_iterator_tag>;
+            using value_type = basic_entry<Const>;
+            using difference_type = ptrdiff_t;
+            using reference = value_type;
+
+            struct pointer {
+                reference row;
+                reference* operator->() { return std::addressof(row); }
+                const reference* operator->() const { return std::addressof(row); }
+            };
+
+            basic_iterator() = default;
+            basic_iterator(parent_type<Const>* parent, difference_type index)
+                : m_parent(parent), m_index(index) {}
+
+            template<bool Other> requires (Const && !Other)
+            basic_iterator(const basic_iterator<Other>& other)
+                : m_parent(other.m_parent), m_index(other.m_index) {}
+
+            reference operator*() const { return {m_parent, static_cast<size_t>(m_index)}; }
+            pointer operator->() const { return {**this}; }
+            reference operator[](difference_type offset) const { return *(*this + offset); }
+            basic_iterator& operator++() { ++m_index; return *this; }
+            basic_iterator operator++(int) { auto old = *this; ++*this; return old; }
+            basic_iterator& operator--() { --m_index; return *this; }
+            basic_iterator operator--(int) { auto old = *this; --*this; return old; }
+            basic_iterator& operator+=(difference_type offset) { m_index += offset; return *this; }
+            basic_iterator& operator-=(difference_type offset) { m_index -= offset; return *this; }
+
+            explicit operator bool() const {
+                return m_parent && m_index >= 0 && static_cast<size_t>(m_index) <= m_parent->size();
+            }
+            bool operator!() const { return !static_cast<bool>(*this); }
+
+            friend basic_iterator operator+(basic_iterator it, difference_type offset) { return it += offset; }
+            friend basic_iterator operator+(difference_type offset, basic_iterator it) { return it += offset; }
+            friend basic_iterator operator-(basic_iterator it, difference_type offset) { return it -= offset; }
+            friend difference_type operator-(basic_iterator left, basic_iterator right) {
+                return left.m_index - right.m_index;
+            }
+            friend bool operator==(const basic_iterator&, const basic_iterator&) = default;
+            friend auto operator<=>(const basic_iterator&, const basic_iterator&) = default;
+        };
+
+        using iterator = basic_iterator<false>;
+        using const_iterator = basic_iterator<true>;
 
     private:
         [[no_unique_address]] IDGenerator m_generator;
         [[no_unique_address]] EventSystem m_eventsystem;
-    public:
-        Storage<id_type, max_size, Types...> storage;
+        using event_types = typename EventSystem::event_types;
+        using data_tuple = typename element_types::template apply<std::tuple>;
 
-        template<std::size_t N>
-        [[nodiscard]] auto &get() {
-            return std::get<N>(storage.entries);
+        // 元の型リストを適用して、挿入前後のイベント型を組み立てる。
+        template<typename... Fields>
+        using will_insert = eventsystem::event::will_insert_event<id_type, Fields...>;
+        template<typename... Fields>
+        using did_insert = eventsystem::event::did_insert_event<id_type, Fields...>;
+        using will_insert_type = typename element_types::template apply<will_insert>;
+        using did_insert_type = typename element_types::template apply<did_insert>;
+
+        auto row_references(size_t index) {
+            return [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                return std::tie(get<Indices>()[index]...);
+            }(std::make_index_sequence<element_types::size>{});
         }
 
-        template<std::size_t N>
-        [[nodiscard]] const auto &get() const {
-            return std::get<N>(storage.entries);
-        }
-
-        [[nodiscard]] std::size_t size() const {
-            return storage.size();
-        }
-
-        [[nodiscard]] bool empty() const {
-            return storage.empty();
-        }
-
-        std::expected<size_t, error_code> index(id_type id) const {
-            return storage.index(id);
-        }
-
-        std::expected<entry, error_code> operator[](id_type id) {
-            auto idx = index(id);
-            if (not idx.has_value())
-                return idx.error();
-            return entry{this, idx.value()};
-        }
-
-        std::expected<const entry, error_code> operator[](id_type id) const {
-            auto idx = index(id);
-            if (not idx.has_value())
-                return idx.error();
-            return entry{this, idx.value()};
-        }
-
-        template<size_t N>
-        std::expected<typename element_types::template get<N> &, error_code> get(id_type id) {
-            auto idx = index(id);
-            if (not idx.has_value())
-                return idx.error();
-            return get<N>()[idx.value()];
-        }
-
-        template<size_t N>
-        std::expected<const typename element_types::template get<N> &, error_code> get(id_type id) const {
-            auto idx = index(id);
-            if (not idx.has_value())
-                return idx.error();
-            return get<N>()[idx.value()];
-        }
-
-        template<typename ...Args>
-        std::expected<void, error_code> push_back(Args &&... args) {
-            if (max_size < size() + 1)
+        template<typename... Args>
+        std::expected<void, error_code> insert_columns(Args&&... args) {
+            static_assert(sizeof...(Args) == element_types::size, "Incorrect number of column values");
+            if (size() >= max_size)
                 return std::unexpected{error_code::buffer_over};
             std::optional<id_type> id = m_generator.next();
-            std::tuple<Types...> data(std::forward<Args>(args)...);
+            if (!id)
+                return std::unexpected{error_code::generate_id_failed};
 
-            m_eventsystem.
-            eventsystem::event::will_insert_event(id, data);
-
-            storage.push_back(id, std::forward<Types>(args)...);
-
-            eventsystem::event::did_insert_event(id, data);
-
-            return {};
+            constexpr bool observes_will = event_types::template contains<will_insert_type>;
+            constexpr bool observes_did = event_types::template contains<did_insert_type>;
+            if constexpr (!observes_will && !observes_did) {
+                return storage.push_back(*id, std::forward<Args>(args)...);
+            } else {
+                data_tuple data(std::forward<Args>(args)...);
+                if constexpr (observes_will) {
+                    auto references = std::apply([](auto&... values) { return std::tie(values...); }, data);
+                    will_insert_type event{*id, references};
+                    m_eventsystem.on(event);
+                    if (event.canceled())
+                        return std::unexpected{error_code::operation_canceled};
+                }
+                auto result = std::apply([&](auto&&... values) {
+                    return storage.push_back(*id, std::forward<decltype(values)>(values)...);
+                }, std::move(data));
+                if (!result)
+                    return result;
+                if constexpr (observes_did) {
+                    did_insert_type event{*id, row_references(size() - 1)};
+                    m_eventsystem.on(event);
+                }
+                return {};
+            }
         }
 
-        void pop_back() {
-            storage.pop_back();
+    public:
+        storage_type storage;
+
+        template<size_t N>
+        [[nodiscard]] decltype(auto) get() { return schema_type::template column<N>(storage.entries); }
+
+        template<size_t N>
+        [[nodiscard]] decltype(auto) get() const { return schema_type::template column<N>(storage.entries); }
+
+        [[nodiscard]] size_t size() const { return storage.size(); }
+        [[nodiscard]] bool empty() const { return storage.empty(); }
+        EventSystem& events() { return m_eventsystem; }
+        const EventSystem& events() const { return m_eventsystem; }
+
+        std::expected<size_t, error_code> index(id_type id) const { return storage.index(id); }
+
+        std::expected<entry, error_code> operator[](id_type id) {
+            auto index = this->index(id);
+            if (!index)
+                return std::unexpected{index.error()};
+            return entry{this, *index};
         }
 
-        void clear() {
-            storage.clear();
+        std::expected<const_entry, error_code> operator[](id_type id) const {
+            auto index = this->index(id);
+            if (!index)
+                return std::unexpected{index.error()};
+            return const_entry{this, *index};
         }
+
+        template<size_t N>
+        using element_reference = decltype(schema_type::template column<N>(
+            std::declval<columns_type&>())[size_t{}]);
+        template<size_t N>
+        using const_element_reference = decltype(schema_type::template column<N>(
+            std::declval<const columns_type&>())[size_t{}]);
+
+        template<size_t N>
+        std::expected<_detail::lookup_value<element_reference<N>>, error_code> get(id_type id) {
+            auto index = this->index(id);
+            if (!index)
+                return std::unexpected{index.error()};
+            return _detail::lookup_reference(get<N>()[*index]);
+        }
+
+        template<size_t N>
+        std::expected<_detail::lookup_value<const_element_reference<N>>, error_code> get(id_type id) const {
+            auto index = this->index(id);
+            if (!index)
+                return std::unexpected{index.error()};
+            return _detail::lookup_reference(get<N>()[*index]);
+        }
+
+        template<typename... Args>
+        std::expected<void, error_code> push_back(Args&&... args) {
+            if constexpr (schema_type::named && sizeof...(Args) == 1) {
+                using argument = std::tuple_element_t<0, std::tuple<Args...>>;
+                if constexpr (std::same_as<std::remove_cvref_t<argument>, typename schema_type::record_type>) {
+                    return schema_type::apply_record(std::forward<Args>(args)..., [&](auto&&... values) {
+                        return insert_columns(std::forward<decltype(values)>(values)...);
+                    });
+                } else {
+                    return insert_columns(std::forward<Args>(args)...);
+                }
+            } else {
+                return insert_columns(std::forward<Args>(args)...);
+            }
+        }
+
+        void pop_back() { storage.pop_back(); }
+        void clear() { storage.clear(); }
 
         std::expected<void, error_code> resize(size_t size) {
-            return storage.resize(size);
+            if (size > max_size)
+                return std::unexpected{error_code::buffer_over};
+            auto old_size = this->size();
+            if constexpr (requires { std::tuple_size<decltype(storage.ids)>::value; }) {
+                // 未使用の ID 領域に先に書き込み、退避用 vector を確保せずに行数を更新する。
+                for (size_t i = old_size; i < size; ++i) {
+                    std::optional<id_type> id = m_generator.next();
+                    if (!id)
+                        return std::unexpected{error_code::generate_id_failed};
+                    storage.ids[i] = *id;
+                }
+                return storage.resize(size);
+            }
+            std::vector<id_type> new_ids;
+            if (size > old_size) {
+                new_ids.reserve(size - old_size);
+                for (size_t i = old_size; i < size; ++i) {
+                    std::optional<id_type> id = m_generator.next();
+                    if (!id)
+                        return std::unexpected{error_code::generate_id_failed};
+                    new_ids.push_back(*id);
+                }
+            }
+            auto result = storage.resize(size);
+            if (!result)
+                return result;
+            for (size_t i = 0; i < new_ids.size(); ++i)
+                storage.ids[old_size + i] = new_ids[i];
+            return {};
         }
 
         std::expected<void, error_code> erase(id_type id) {
-            auto idx = index(id);
-            if (idx.error())
-                return std::unexpected{error_code::not_found_id};
-            storage.swap(size(), idx);
+            auto index = this->index(id);
+            if (!index)
+                return std::unexpected{index.error()};
+            if (*index != size() - 1) {
+                auto result = storage.swap(*index, size() - 1);
+                if (!result)
+                    return result;
+            }
             storage.pop_back();
             return {};
         }
 
-        iterator begin() {
-            return iterator(this, 0);
-        }
-
-        iterator end() {
-            return iterator(this, size());
-        }
-
-        const_iterator begin() const {
-            return const_iterator(this, 0);
-        }
-
-        const_iterator end() const {
-            return const_iterator(this, size());
-        }
-
-        const_iterator cbegin() const {
-            return const_iterator(this, 0);
-        }
-
-        const_iterator cend() const {
-            return const_iterator(this, size());
-        }
-
-        struct entry {
-            this_type *parent;
-            size_t index;
-
-            id_type id() const {
-                return parent->storage.ids[index];
-            }
-
-            template<size_t N>
-            typename element_types::template get<N> &get() {
-                return parent->template get<N>()[index];
-            }
-
-            template<size_t N>
-            const typename element_types::template get<N> &get() const {
-                return parent->template get<N>()[index];
-            }
-        };
-
-        struct const_entry {
-            const this_type *parent;
-            size_t index;
-
-            id_type id() const {
-                return parent->storage.ids[index];
-            }
-
-            template<size_t N>
-            const typename element_types::template get<N> &get() const {
-                return parent->template get<N>()[index];
-            }
-        };
-
-        struct iterator {
-            using iterator_category = std::random_access_iterator_tag;
-            using value_type = entry;
-            using difference_type = ptrdiff_t;
-            using pointer = entry *;
-            using reference = entry;
-        private:
-            entry m_entry;
-        public:
-            iterator(this_type *parent, size_t index) : m_entry{parent, index} {};
-
-            iterator(const iterator &) = default;
-
-            iterator &operator=(const iterator &) = default;
-
-            reference operator*() const {
-                return m_entry;
-            }
-
-            pointer operator->() const {
-                return &m_entry;
-            }
-
-            reference operator*() {
-                return m_entry;
-            }
-
-            pointer operator->() {
-                return &m_entry;
-            }
-
-            entry operator[](difference_type diff) const {
-                return {m_entry.parent, m_entry.index + diff};
-            }
-
-            iterator &operator++() {
-                m_entry.index++;
-                return *this;
-            }
-
-            iterator operator++(int) {
-                return {m_entry.parent, m_entry.index++};
-            }
-
-            iterator &operator--() {
-                m_entry.index--;
-                return *this;
-            }
-
-            iterator operator--(int) {
-                return {m_entry.parent, m_entry.index--};
-            }
-
-            iterator &operator+=(difference_type diff) {
-                m_entry.index += diff;
-                return *this;
-            }
-
-            iterator &operator-=(difference_type diff) {
-                m_entry.index -= diff;
-                return *this;
-            }
-
-            explicit operator bool() const {
-                return m_entry.index <= m_entry.parent->size();
-            }
-
-            bool operator!() const {
-                return m_entry.parent->size() < m_entry.index;
-            }
-
-            friend iterator operator+(const iterator &itr, difference_type diff) {
-                return {itr.m_entry.parent, itr.m_entry.index + diff};
-            }
-
-            friend iterator operator+(difference_type diff, const iterator &itr) {
-                return {itr.m_entry.parent, itr.m_entry.index + diff};
-            }
-
-            friend iterator operator-(const iterator &itr, difference_type diff) {
-                return {itr.m_entry.parent, itr.m_entry.index - diff};
-            }
-
-            friend difference_type operator-(const iterator &l, const iterator &r) {
-                return l.m_entry.index - r.m_entry.index;
-            }
-
-            friend bool operator==(const iterator &l, const iterator &r) {
-                if ((bool) l && (bool) r && l.m_entry.index == r.m_entry.index)
-                    return true;
-                return false;
-            }
-
-            friend bool operator!=(const iterator &l, const iterator &r) {
-                if ((bool) l != (bool) r)
-                    return true;
-                if ((!l && !r) || l.m_entry.index != r.m_entry.index)
-                    return true;
-                return false;
-            }
-
-            friend bool operator<(const iterator &l, const iterator &r) {
-                return l.m_entry.index < r.m_entry.index;
-            }
-
-            friend bool operator<=(const iterator &l, const iterator &r) {
-                return l.m_entry.index <= r.m_entry.index;
-            }
-
-            friend bool operator>(const iterator &l, const iterator &r) {
-                return l.m_entry.index > r.m_entry.index;
-            }
-        };
-
-        struct const_iterator {
-            using iterator_category = std::random_access_iterator_tag;
-            using value_type = const_entry;
-            using difference_type = ptrdiff_t;
-            using pointer = const_entry *;
-            using reference = const const_entry &;
-        private:
-            const_entry m_entry;
-        public:
-            const_iterator(const this_type *parent, size_t index) : m_entry{parent, index} {};
-
-            const_iterator(const const_iterator &) = default;
-
-            const_iterator &operator=(const const_iterator &) = default;
-
-            reference operator*() const {
-                return m_entry;
-            }
-
-            pointer operator->() const {
-                return &m_entry;
-            }
-
-            const_entry operator[](difference_type diff) const {
-                return {m_entry.parent, m_entry.index + diff};
-            }
-
-            const_iterator &operator++() {
-                m_entry.index++;
-                return *this;
-            }
-
-            const_iterator operator++(int) {
-                return {m_entry.parent, m_entry.index++};
-            }
-
-            const_iterator &operator--() {
-                m_entry.index--;
-                return *this;
-            }
-
-            const_iterator operator--(int) {
-                return {m_entry.parent, m_entry.index--};
-            }
-
-            const_iterator &operator+=(difference_type diff) {
-                m_entry.index += diff;
-                return *this;
-            }
-
-            const_iterator &operator-=(difference_type diff) {
-                m_entry.index -= diff;
-                return *this;
-            }
-
-            explicit operator bool() const {
-                return m_entry.index <= m_entry.parent->size();
-            }
-
-            bool operator!() const {
-                return m_entry.parent->size() < m_entry.index;
-            }
-
-            friend const_iterator operator+(const const_iterator &itr, difference_type diff) {
-                return {itr.m_entry.parent, itr.m_entry.index + diff};
-            }
-
-            friend const_iterator operator+(difference_type diff, const const_iterator &itr) {
-                return {itr.m_entry.parent, itr.m_entry.index + diff};
-            }
-
-            friend const_iterator operator-(const const_iterator &itr, difference_type diff) {
-                return {itr.m_entry.parent, itr.m_entry.index - diff};
-            }
-
-            friend difference_type operator-(const const_iterator &l, const const_iterator &r) {
-                return l.m_entry.index - r.m_entry.index;
-            }
-
-            friend bool operator==(const const_iterator &l, const const_iterator &r) {
-                if ((bool) l && (bool) r && l.m_entry.index == r.m_entry.index)
-                    return true;
-                return false;
-            }
-
-            friend bool operator!=(const const_iterator &l, const const_iterator &r) {
-                if ((bool) l != (bool) r)
-                    return true;
-                if ((!l && !r) || l.m_entry.index != r.m_entry.index)
-                    return true;
-                return false;
-            }
-
-            friend bool operator<(const const_iterator &l, const const_iterator &r) {
-                return l.m_entry.index < r.m_entry.index;
-            }
-
-            friend bool operator<=(const const_iterator &l, const const_iterator &r) {
-                return l.m_entry.index <= r.m_entry.index;
-            }
-
-            friend bool operator>(const const_iterator &l, const const_iterator &r) {
-                return l.m_entry.index > r.m_entry.index;
-            }
-        };
+        iterator begin() { return {this, 0}; }
+        iterator end() { return {this, static_cast<ptrdiff_t>(size())}; }
+        const_iterator begin() const { return {this, 0}; }
+        const_iterator end() const { return {this, static_cast<ptrdiff_t>(size())}; }
+        const_iterator cbegin() const { return begin(); }
+        const_iterator cend() const { return end(); }
     };
 
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+    // record<T> を既存の buffer に渡すための別名。
+    template<typename Record,
+            generator::is_generator IDGenerator = generator::iota,
+            eventsystem::is_eventsystem EventSystem = eventsystem::dummy,
+            template<typename, size_t, typename...> typename Storage = storage::static_storage,
+            size_t MaxSize = Storage<size_t, 1, int>::default_max_size>
+    using record_buffer = buffer<IDGenerator, EventSystem, Storage, MaxSize, record<Record>>;
+#endif
+
+
+    // チャンク型バッファの構想（未実装）
     /*
     template<generator::is_generator G, eventsystem::is_eventsystem E, size_t ChunkSize = 16, typename ...Types>
     struct chunked_buffer {
@@ -1107,6 +1273,112 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         std::tuple<std::vector<buffer<G, E, storage::static_storage, ChunkSize, Types>>...> chunks;
     };
      */
+    // ================================== rows =================================
+    // 列ストレージ単体の行ビュー
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+    namespace storage {
+        namespace reflection_detail {
+            template<typename Columns>
+            class row_iterator {
+                template<typename> friend class row_iterator;
+
+                Columns* m_columns = nullptr;
+                std::ptrdiff_t m_index = 0;
+
+            public:
+                using iterator_concept = std::random_access_iterator_tag;
+                // 間接参照はプロキシ値を返す。C++20 ranges は iterator_concept を参照する。
+                using iterator_category = std::input_iterator_tag;
+                using difference_type = std::ptrdiff_t;
+                using reference = typename row_access<Columns>::reference;
+                using value_type = reference;
+
+                struct pointer {
+                    reference row;
+
+                    constexpr const reference* operator->() const {
+                        return std::addressof(row);
+                    }
+                };
+
+                constexpr row_iterator() = default;
+                constexpr row_iterator(Columns* columns, difference_type index)
+                    : m_columns(columns), m_index(index) {}
+
+                template<typename Other> requires std::is_convertible_v<Other*, Columns*>
+                constexpr row_iterator(const row_iterator<Other>& other)
+                    : m_columns(other.m_columns), m_index(other.m_index) {}
+
+                constexpr reference operator*() const {
+                    return row_access<Columns>::get(*m_columns, static_cast<std::size_t>(m_index));
+                }
+
+                constexpr pointer operator->() const { return {**this}; }
+                constexpr reference operator[](difference_type offset) const { return *(*this + offset); }
+
+                constexpr row_iterator& operator++() { ++m_index; return *this; }
+                constexpr row_iterator operator++(int) { auto old = *this; ++*this; return old; }
+                constexpr row_iterator& operator--() { --m_index; return *this; }
+                constexpr row_iterator operator--(int) { auto old = *this; --*this; return old; }
+                constexpr row_iterator& operator+=(difference_type offset) { m_index += offset; return *this; }
+                constexpr row_iterator& operator-=(difference_type offset) { m_index -= offset; return *this; }
+
+                friend constexpr row_iterator operator+(row_iterator it, difference_type offset) {
+                    return it += offset;
+                }
+                friend constexpr row_iterator operator+(difference_type offset, row_iterator it) {
+                    return it += offset;
+                }
+                friend constexpr row_iterator operator-(row_iterator it, difference_type offset) {
+                    return it -= offset;
+                }
+                friend constexpr difference_type operator-(row_iterator left, row_iterator right) {
+                    return left.m_index - right.m_index;
+                }
+                friend constexpr bool operator==(const row_iterator&, const row_iterator&) = default;
+                friend constexpr auto operator<=>(const row_iterator&, const row_iterator&) = default;
+            };
+
+            template<typename Columns>
+            class rows_view : public std::ranges::view_interface<rows_view<Columns>> {
+                Columns* m_columns = nullptr;
+                std::size_t m_size = 0;
+
+            public:
+                using iterator = row_iterator<Columns>;
+
+                constexpr rows_view() = default;
+                constexpr explicit rows_view(Columns& columns)
+                    : m_columns(std::addressof(columns)), m_size(row_access<Columns>::size(columns)) {}
+
+                constexpr iterator begin() const { return {m_columns, 0}; }
+                constexpr iterator end() const { return {m_columns, static_cast<std::ptrdiff_t>(m_size)}; }
+                constexpr std::size_t size() const { return m_size; }
+            };
+        }
+
+        // 列要素への参照・プロキシを、同名のメンバを持つ行として返す。
+        // 最短の列長を行数とし、列のないスキーマは 0 行とする。
+        template<typename Columns>
+        [[nodiscard]] constexpr auto rows(Columns& columns) {
+            return reflection_detail::rows_view<Columns>(columns);
+        }
+
+        template<typename Columns>
+        void rows(const Columns&&) = delete;
+    }
+#endif
+
 }
 
-#endif //SAITEKIKUUKAN_HPP
+// ============================== std::ranges ==============================
+// 行ビューが一時オブジェクトでも、列ストレージが生きていればイテレータを利用できる。
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+namespace std::ranges {
+    template<typename Columns>
+    inline constexpr bool enable_borrowed_range<
+        ::SAITEKIKUUKAN_NAMESPACE::storage::reflection_detail::rows_view<Columns>> = true;
+}
+#endif
+
+#endif // SAITEKIKUUKAN_HPP
