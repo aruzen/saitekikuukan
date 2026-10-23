@@ -1,0 +1,4 @@
+worktrees/
+cmake-build*/
+build/
+.idea/

@@ -786,7 +786,15 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             if (max_size < size() + 1)
                 return std::unexpected{error_code::buffer_over};
             std::optional<id_type> id = m_generator.next();
+            std::tuple<Types...> data(std::forward<Args>(args)...);
+
+            m_eventsystem.
+            eventsystem::event::will_insert_event(id, data);
+
             storage.push_back(id, std::forward<Types>(args)...);
+
+            eventsystem::event::did_insert_event(id, data);
+
             return {};
         }
 
