@@ -55,9 +55,11 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
             template<typename L1, typename L2, typename ...Types>
             auto _concat() {
+                using combined = typename L1::template append<L2>;
                 if constexpr (sizeof...(Types) == 0)
-                    return L1::template append<L2>;
-                return _concat<L1::template append<L2>, Types...>;
+                    return combined{};
+                else
+                    return _concat<combined, Types...>();
             }
 
             template<typename ...Types>
@@ -70,30 +72,23 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 } else if constexpr (has_bool_structure_type<Filter<T>>) {
                     if constexpr (std::same_as<typename Filter<T>::type, std::true_type>)
                         return true;
-                } else if (has_bool_value_type<Filter<T>>) {
-                    if constexpr (Filter<T>::value)
-                        return true;
+                } else if constexpr (has_bool_value_type<Filter<T>>) {
+                    return static_cast<bool>(Filter<T>::value);
                 } else {
                     static_assert(
+                            has_bool_value_type<Filter<T>>,
                             "Invalid Filter<T> type: must provide either '::value', '::type' or same_as<std::true_type>");
                 }
                 return false;
             }
 
+            template<template<typename...> typename Filter, typename N>
+            auto _filter() { return N{}; }
+
             template<template<typename...> typename Filter, typename N, typename T, typename ...Types>
             auto _filter() {
-                using added = N::template add<T>;
-                if constexpr (sizeof...(Types) == 0) {
-                    if constexpr (_apply_filter<Filter, T>)
-                        return added();
-                    else
-                        return N();
-                } else {
-                    if constexpr (_apply_filter<Filter, T>)
-                        return _filter<Filter, added, Types...>();
-                    else
-                        return _filter<Filter, N, Types...>();
-                }
+                using next = std::conditional_t<_apply_filter<Filter, T>(), typename N::template add<T>, N>;
+                return _filter<Filter, next, Types...>();
             }
 
             template<size_t Elem, size_t Size>
@@ -113,20 +108,16 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 return poped;
             }
 
+            template<template<typename...> typename Filter, size_t Current, size_t Size, std::array<size_t, Size> Arr>
+            constexpr auto _filtered_index() { return Arr; }
+
             template<template<typename...> typename Filter, size_t Current, size_t Size, std::array<size_t, Size> Arr, typename T, typename ...Types>
             constexpr auto _filtered_index() {
-                if constexpr (sizeof...(Types) == 0) {
-                    if constexpr (_apply_filter<Filter, T>)
-                        return _array_push_back<Current, Size>(Arr);
-                    else
-                        return Arr;
-                } else {
-                    if constexpr (_apply_filter<Filter, T>)
-                        return _filtered_index<Filter,
-                                Current + 1, Size + 1, _array_push_back<Current, Size>(Arr), Types...>();
-                    else
-                        return _filtered_index<Filter, Current + 1, Size, Arr, Types...>();
-                }
+                if constexpr (_apply_filter<Filter, T>())
+                    return _filtered_index<Filter, Current + 1, Size + 1,
+                        _array_push_back<Current, Size>(Arr), Types...>();
+                else
+                    return _filtered_index<Filter, Current + 1, Size, Arr, Types...>();
             }
 
             template<size_t MetaID, typename T>
@@ -178,8 +169,9 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             using filter = decltype(helper::_filter<Filter, type_list<>, Types...>());
 
             template<template<typename...> typename Filter>
-            constexpr auto
-            filtered_index() { return helper::_filtered_index<Filter, 0, 0, std::array<size_t, 0>, Types...>; }
+            static constexpr auto filtered_index() {
+                return helper::_filtered_index<Filter, 0, 0, std::array<size_t, 0>{}, Types...>();
+            }
 
             template<typename ...Adds>
             using add = type_list<Types..., Adds...>;
