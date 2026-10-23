@@ -130,7 +130,7 @@ auto readonly = kk::storage::rows(std::as_const(storage));
 対象は基底クラス・参照メンバ・ビットフィールドを持たない、union 以外の集成体です。
 静的メンバは列に含まれず、ネストした構造体は一つの列の要素型になります。
 GCC 16 では `-std=c++26 -freflection` が必要です。リフレクションを使わない従来形式は通常の設定でビルドできます。
-実装は `saitekikuukan.hpp` に統合されています。`saitekikuukan_reflection.hpp` は互換用の入口です。
+実装は `saitekikuukan.hpp` 一つにまとまっています。
 
 ```sh
 cmake -S . -B build/reflection -DCMAKE_CXX_COMPILER=g++-16 \

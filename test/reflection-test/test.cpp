@@ -95,8 +95,8 @@ void check(bool condition) {
 
 using positions = kk::storage::static_soa<position, 10240>;
 
-// Separate externally visible kernels allow checking vectorization diagnostics
-// for named access and structured bindings with the same generated storage.
+// 同じ生成ストレージへの名前付きアクセスと構造化束縛を、別関数として比較する。
+// 関数を外部に公開して、ベクトル化診断と生成コードを確認できるようにする。
 extern "C" void update_named(positions& storage, float dx, float dy) {
     for (std::size_t i = 0; i < storage.x.size(); ++i) {
         storage.x[i] += dx;
@@ -244,7 +244,7 @@ int main() {
     check(moved.x.size() == 3 && moved.x[0] == 4.0f);
     check(moved.y.size() == 3 && moved.y[0] == 5.0f);
     check(moved.name.size() == 3 && moved.name[0] == "dynamic");
-    // Unequal column lengths follow zip semantics and stop at the shortest.
+    // 列長が異なる場合は zip と同じく最短の列長まで走査する。
     moved.x.resize(2);
     check(kk::storage::rows(moved).size() == 2);
     for (auto row : kk::storage::rows(moved))
@@ -257,7 +257,7 @@ int main() {
     kk::storage::dynamic_soa<flag> flags;
     flags.active.resize(2);
     for (auto row : kk::storage::rows(flags))
-        row.active = true; // vector<bool> element proxies also write through.
+        row.active = true; // vector<bool> のプロキシ経由でも元の列に書き込む。
     check(flags.active[0] && flags.active[1]);
     auto const_flags = kk::storage::rows(std::as_const(flags));
     static_assert(std::is_same_v<decltype((*const_flags.begin()).active), bool>);
@@ -268,7 +268,7 @@ int main() {
     auto& [points, values] = custom;
     points[0] = {6.0f, 7.0f};
     check(custom.point[0].x == 6.0f && custom.point[0].y == 7.0f);
-    check(values[0] == 0); // The original record's initializer is not copied.
+    check(values[0] == 0); // 元の構造体のメンバ初期化子は引き継がない。
 
     kk::storage::static_soa<empty, 4> no_columns;
     kk::storage::for_each_column(no_columns, [](auto&) { std::abort(); });

@@ -1,6 +1,4 @@
-//
-// Created by morimoto_hibiki on 2025/08/16.
-//
+// 2025/08/16 morimoto_hibiki 作成。
 #pragma once
 
 #ifndef SAITEKIKUUKAN_HPP
@@ -10,238 +8,36 @@
 #define SAITEKIKUUKAN_NAMESPACE kk
 #endif
 
+// UUID ジェネレータを利用する場合に定義する。
 // #define HAS_BOOST_UUID
 
-// TODO: 最後にalphabet順に並び替えようかな今回は
-#include <array>
 #include <algorithm>
+#include <array>
 #include <compare>
 #include <concepts>
 #include <coroutine>
+#include <cstddef>
 #include <exception>
 #include <expected>
 #include <functional>
-#include <limits>
-#include <memory>
-#include <optional>
-#include <string>
-#include <source_location>
-#include <ranges>
-#include <vector>
-#include <tuple>
-#include <type_traits>
-#include <utility>
-
-#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
-#include <algorithm>
-#include <array>
-#include <compare>
-#include <cstddef>
 #include <iterator>
 #include <limits>
 #include <memory>
-#include <meta>
+#include <optional>
 #include <ranges>
+#include <source_location>
+#include <string>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
-#ifndef SAITEKIKUUKAN_NAMESPACE
-#define SAITEKIKUUKAN_NAMESPACE kk
-#endif
-
-namespace SAITEKIKUUKAN_NAMESPACE::storage {
-    namespace reflection_detail {
-        template<std::size_t Size>
-        struct array_column {
-            template<typename T>
-            using type = std::array<T, Size>;
-        };
-
-        template<typename Record, template<typename> typename Column>
-        struct columns_type {
-            static_assert(std::is_aggregate_v<Record> && !std::is_union_v<Record>,
-                          "SoA records must be non-union aggregates");
-
-            struct type;
-
-            consteval {
-                auto context = std::meta::access_context::current();
-                if (!std::meta::bases_of(^^Record, context).empty())
-                    throw "SoA records must not have base classes";
-
-                std::vector<std::meta::info> columns;
-                for (auto member : std::meta::nonstatic_data_members_of(^^Record, context)) {
-                    if (std::meta::is_bit_field(member))
-                        throw "SoA records must not contain bit-fields";
-                    if (std::meta::is_reference_type(std::meta::type_of(member)))
-                        throw "SoA records must not contain reference members";
-
-                    auto column = std::meta::substitute(^^Column, {std::meta::type_of(member)});
-                    columns.push_back(std::meta::data_member_spec(column, {
-                        .name = std::meta::identifier_of(member)
-                    }));
-                }
-                std::meta::define_aggregate(^^type, columns);
-            }
-        };
-    }
-
-    // Owns the column containers directly; member names and declaration order
-    // come from Record. The resulting aggregate also supports structured bindings.
-    template<typename Record, template<typename> typename Column>
-    using soa = typename reflection_detail::columns_type<Record, Column>::type;
-
-    template<typename Record, std::size_t Size>
-    using static_soa = soa<Record, reflection_detail::array_column<Size>::template type>;
-
-    template<typename Record>
-    using dynamic_soa = soa<Record, std::vector>;
-
-    // Expansion statements visit each column with its actual type, including
-    // const qualification. No tuple of references or runtime lookup is needed.
-    template<typename Columns, typename Function>
-    constexpr void for_each_column(Columns& columns, Function&& function) {
-        template for (auto& column : columns) {
-            function(column);
-        }
-    }
-
-    namespace reflection_detail {
-        template<bool Const>
-        struct element_reference {
-            template<typename Column>
-            using type = decltype(std::declval<
-                std::conditional_t<Const, const Column, Column>&>()[std::size_t{}]);
-        };
-
-        template<typename Columns>
-        struct row_access {
-            using columns_type = std::remove_const_t<Columns>;
-            using reference = soa<columns_type,
-                element_reference<std::is_const_v<Columns>>::template type>;
-
-            static constexpr auto members = std::define_static_array(
-                std::meta::nonstatic_data_members_of(^^columns_type,
-                    std::meta::access_context::current()));
-
-            static constexpr reference get(Columns& columns, std::size_t index) {
-                return [&]<std::size_t... Indices>(std::index_sequence<Indices...>) {
-                    return reference{columns.[:members[Indices]:][index]...};
-                }(std::make_index_sequence<members.size()>{});
-            }
-
-            static constexpr std::size_t size(const Columns& columns) {
-                if constexpr (members.empty()) {
-                    return 0;
-                } else {
-                    auto count = std::numeric_limits<std::size_t>::max();
-                    for_each_column(columns, [&](const auto& column) {
-                        count = std::min(count, static_cast<std::size_t>(column.size()));
-                    });
-                    return count;
-                }
-            }
-        };
-
-        template<typename Columns>
-        class row_iterator {
-            template<typename> friend class row_iterator;
-
-            Columns* m_columns = nullptr;
-            std::ptrdiff_t m_index = 0;
-
-        public:
-            using iterator_concept = std::random_access_iterator_tag;
-            // Dereference returns a proxy value; C++20 ranges use iterator_concept.
-            using iterator_category = std::input_iterator_tag;
-            using difference_type = std::ptrdiff_t;
-            using reference = typename row_access<Columns>::reference;
-            using value_type = reference;
-
-            struct pointer {
-                reference row;
-
-                constexpr const reference* operator->() const {
-                    return std::addressof(row);
-                }
-            };
-
-            constexpr row_iterator() = default;
-            constexpr row_iterator(Columns* columns, difference_type index)
-                : m_columns(columns), m_index(index) {}
-
-            template<typename Other> requires std::is_convertible_v<Other*, Columns*>
-            constexpr row_iterator(const row_iterator<Other>& other)
-                : m_columns(other.m_columns), m_index(other.m_index) {}
-
-            constexpr reference operator*() const {
-                return row_access<Columns>::get(*m_columns, static_cast<std::size_t>(m_index));
-            }
-
-            constexpr pointer operator->() const { return {**this}; }
-            constexpr reference operator[](difference_type offset) const { return *(*this + offset); }
-
-            constexpr row_iterator& operator++() { ++m_index; return *this; }
-            constexpr row_iterator operator++(int) { auto old = *this; ++*this; return old; }
-            constexpr row_iterator& operator--() { --m_index; return *this; }
-            constexpr row_iterator operator--(int) { auto old = *this; --*this; return old; }
-            constexpr row_iterator& operator+=(difference_type offset) { m_index += offset; return *this; }
-            constexpr row_iterator& operator-=(difference_type offset) { m_index -= offset; return *this; }
-
-            friend constexpr row_iterator operator+(row_iterator it, difference_type offset) {
-                return it += offset;
-            }
-            friend constexpr row_iterator operator+(difference_type offset, row_iterator it) {
-                return it += offset;
-            }
-            friend constexpr row_iterator operator-(row_iterator it, difference_type offset) {
-                return it -= offset;
-            }
-            friend constexpr difference_type operator-(row_iterator left, row_iterator right) {
-                return left.m_index - right.m_index;
-            }
-            friend constexpr bool operator==(const row_iterator&, const row_iterator&) = default;
-            friend constexpr auto operator<=>(const row_iterator&, const row_iterator&) = default;
-        };
-
-        template<typename Columns>
-        class rows_view : public std::ranges::view_interface<rows_view<Columns>> {
-            Columns* m_columns = nullptr;
-            std::size_t m_size = 0;
-
-        public:
-            using iterator = row_iterator<Columns>;
-
-            constexpr rows_view() = default;
-            constexpr explicit rows_view(Columns& columns)
-                : m_columns(std::addressof(columns)), m_size(row_access<Columns>::size(columns)) {}
-
-            constexpr iterator begin() const { return {m_columns, 0}; }
-            constexpr iterator end() const { return {m_columns, static_cast<std::ptrdiff_t>(m_size)}; }
-            constexpr std::size_t size() const { return m_size; }
-        };
-    }
-
-    // Each row is an aggregate of column element references with the same names.
-    // The shortest column determines the row count; an empty schema has no rows.
-    template<typename Columns>
-    [[nodiscard]] constexpr auto rows(Columns& columns) {
-        return reflection_detail::rows_view<Columns>(columns);
-    }
-
-    template<typename Columns>
-    void rows(const Columns&&) = delete;
-}
-
-namespace std::ranges {
-    template<typename Columns>
-    inline constexpr bool enable_borrowed_range<
-        ::SAITEKIKUUKAN_NAMESPACE::storage::reflection_detail::rows_view<Columns>> = true;
-}
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+#include <meta>
 #endif
 
 namespace SAITEKIKUUKAN_NAMESPACE {
+    // 型リストとメタ関数
     namespace _meta {
         template<typename T>
         concept is_type_list = T::is_type_list_flag;
@@ -406,7 +202,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             using wrap = type_list<T<Types>...>;
 
             /*
-             * これのStartは価値がないが遅延評価させるtemplateのために必要
+             * Start は識別子の開始値。テンプレート引数として型の生成を遅延させる。
              */
             template<size_t Start = 0>
             using wrap_meta_id = decltype(helper::_append_id<Start, type_list<>, Types...>());
@@ -417,8 +213,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
     }
     using _meta::type_list;
 
-// ==========================================================
-
+    // 操作結果を表すエラー
     enum class error_code {
         out_of_range,
         not_found_id,
@@ -427,8 +222,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         operation_canceled
     };
 
-// ==========================================================
-
+    // ID の生成方針
     namespace generator {
         template<typename T>
         concept is_generator = requires(T &t) {
@@ -505,9 +299,9 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 #endif
     }
 
-// ==========================================================
-
+    // 操作前後のイベントとリスナ
     namespace eventsystem {
+        // will_* は操作前、did_* は操作完了後の通知を表す。
         namespace event {
             template<typename IDType, typename ...Types>
             struct will_insert_event {
@@ -679,7 +473,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         };
 
         /*
-         * 実体を保持しない(EOB用)
+         * リスナを保持せず、通知時に一時生成する。
          */
         template<typename... Types>
         struct zero_cost {
@@ -703,7 +497,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         };
 
         /*
-         * 空クラスは実体を保持しない
+         * 状態を持つリスナだけを保持し、空のリスナは通知時に生成する。
          */
         template<typename... Types>
         struct minimum_cost {
@@ -746,10 +540,107 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         };
     }
 
-// ==========================================================
+    // リフレクションによる列と行参照の生成
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+    namespace storage {
+        namespace reflection_detail {
+            template<std::size_t Size>
+            struct array_column {
+                template<typename T>
+                using type = std::array<T, Size>;
+            };
 
-    // A record schema is explicit, so a struct in a legacy type pack remains
-    // one component rather than being flattened implicitly.
+            template<typename Record, template<typename> typename Column>
+            struct columns_type {
+                static_assert(std::is_aggregate_v<Record> && !std::is_union_v<Record>,
+                              "SoA records must be non-union aggregates");
+
+                struct type;
+
+                consteval {
+                    auto context = std::meta::access_context::current();
+                    if (!std::meta::bases_of(^^Record, context).empty())
+                        throw "SoA records must not have base classes";
+
+                    std::vector<std::meta::info> columns;
+                    for (auto member : std::meta::nonstatic_data_members_of(^^Record, context)) {
+                        if (std::meta::is_bit_field(member))
+                            throw "SoA records must not contain bit-fields";
+                        if (std::meta::is_reference_type(std::meta::type_of(member)))
+                            throw "SoA records must not contain reference members";
+
+                        auto column = std::meta::substitute(^^Column, {std::meta::type_of(member)});
+                        columns.push_back(std::meta::data_member_spec(column, {
+                            .name = std::meta::identifier_of(member)
+                        }));
+                    }
+                    std::meta::define_aggregate(^^type, columns);
+                }
+            };
+        }
+
+        // 元のメンバ名と宣言順を保った集成体として、列コンテナを直接保持する。
+        // 生成した型は構造化束縛でも扱える。
+        template<typename Record, template<typename> typename Column>
+        using soa = typename reflection_detail::columns_type<Record, Column>::type;
+
+        template<typename Record, std::size_t Size>
+        using static_soa = soa<Record, reflection_detail::array_column<Size>::template type>;
+
+        template<typename Record>
+        using dynamic_soa = soa<Record, std::vector>;
+
+        // 各列の型と const 性を保って処理を展開し、参照タプルや実行時の検索を省く。
+        template<typename Columns, typename Function>
+        constexpr void for_each_column(Columns& columns, Function&& function) {
+            template for (auto& column : columns) {
+                function(column);
+            }
+        }
+
+        namespace reflection_detail {
+            template<bool Const>
+            struct element_reference {
+                template<typename Column>
+                using type = decltype(std::declval<
+                    std::conditional_t<Const, const Column, Column>&>()[std::size_t{}]);
+            };
+
+            template<typename Columns>
+            struct row_access {
+                using columns_type = std::remove_const_t<Columns>;
+                using reference = soa<columns_type,
+                    element_reference<std::is_const_v<Columns>>::template type>;
+
+                static constexpr auto members = std::define_static_array(
+                    std::meta::nonstatic_data_members_of(^^columns_type,
+                        std::meta::access_context::current()));
+
+                static constexpr reference get(Columns& columns, std::size_t index) {
+                    return [&]<std::size_t... Indices>(std::index_sequence<Indices...>) {
+                        return reference{columns.[:members[Indices]:][index]...};
+                    }(std::make_index_sequence<members.size()>{});
+                }
+
+                static constexpr std::size_t size(const Columns& columns) {
+                    if constexpr (members.empty()) {
+                        return 0;
+                    } else {
+                        auto count = std::numeric_limits<std::size_t>::max();
+                        for_each_column(columns, [&](const auto& column) {
+                            count = std::min(count, static_cast<std::size_t>(column.size()));
+                        });
+                        return count;
+                    }
+                }
+            };
+
+        }
+    }
+#endif
+
+    // 型パックと構造体に共通のスキーマ
+    // 構造体を一つの列として使う従来形式と区別するため、展開は record<T> で明示する。
     template<typename Record>
     struct record {};
 
@@ -838,6 +729,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         };
 #endif
 
+        // expected に参照を直接格納せず、通常の列は reference_wrapper で返す。
+        // vector<bool> などの列では、要素アクセスが返すプロキシ値をそのまま使う。
         template<typename Reference>
         using lookup_value = std::conditional_t<std::is_lvalue_reference_v<Reference>,
             std::reference_wrapper<std::remove_reference_t<Reference>>, Reference>;
@@ -851,6 +744,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         }
     }
 
+    // 列ストレージと固定長・可変長の管理
     namespace storage {
         template<template<typename, size_t, typename...> typename T>
         concept is_storage = requires(T<size_t, 1, int> t, const T<size_t, 1, int> tc) {
@@ -1069,8 +963,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         };
     }
 
-// ==========================================================
-
+    // ID・イベント・有効行数を管理する共通の buffer
     template<generator::is_generator IDGenerator = generator::iota,
             eventsystem::is_eventsystem EventSystem = eventsystem::dummy,
             template<typename, size_t, typename...> typename Storage = storage::static_storage,
@@ -1092,6 +985,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         using fields_type = typename schema_type::template fields<
             std::conditional_t<Const, const columns_type, columns_type>>;
 
+        // 型パック形式では空の基底、record 形式では同名メンバへの参照を継承する。
         template<bool Const>
         struct basic_entry : fields_type<Const> {
             parent_type<Const>* parent;
@@ -1113,6 +1007,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         using entry = basic_entry<false>;
         using const_entry = basic_entry<true>;
 
+        // const 性だけを切り替え、通常・const イテレータで同じ操作を共有する。
         template<bool Const>
         class basic_iterator {
             template<bool> friend class basic_iterator;
@@ -1175,6 +1070,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         using event_types = typename EventSystem::event_types;
         using data_tuple = typename element_types::template apply<std::tuple>;
 
+        // 元の型リストを適用して、挿入前後のイベント型を組み立てる。
         template<typename... Fields>
         using will_insert = eventsystem::event::will_insert_event<id_type, Fields...>;
         template<typename... Fields>
@@ -1300,8 +1196,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 return std::unexpected{error_code::buffer_over};
             auto old_size = this->size();
             if constexpr (requires { std::tuple_size<decltype(storage.ids)>::value; }) {
-                // Fixed storage already owns inactive ID slots. Populate them
-                // before committing the new size, without allocating a staging vector.
+                // 未使用の ID 領域に先に書き込み、退避用 vector を確保せずに行数を更新する。
                 for (size_t i = old_size; i < size; ++i) {
                     std::optional<id_type> id = m_generator.next();
                     if (!id)
@@ -1350,6 +1245,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
     };
 
 #if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+    // record<T> を既存の buffer に渡すための別名。
     template<typename Record,
             generator::is_generator IDGenerator = generator::iota,
             eventsystem::is_eventsystem EventSystem = eventsystem::dummy,
@@ -1359,6 +1255,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 #endif
 
 
+    // チャンク型バッファの構想（未実装）
     /*
     template<generator::is_generator G, eventsystem::is_eventsystem E, size_t ChunkSize = 16, typename ...Types>
     struct chunked_buffer {
@@ -1368,6 +1265,110 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         std::tuple<std::vector<buffer<G, E, storage::static_storage, ChunkSize, Types>>...> chunks;
     };
      */
+    // 列ストレージ単体の行ビュー
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+    namespace storage {
+        namespace reflection_detail {
+            template<typename Columns>
+            class row_iterator {
+                template<typename> friend class row_iterator;
+
+                Columns* m_columns = nullptr;
+                std::ptrdiff_t m_index = 0;
+
+            public:
+                using iterator_concept = std::random_access_iterator_tag;
+                // 間接参照はプロキシ値を返す。C++20 ranges は iterator_concept を参照する。
+                using iterator_category = std::input_iterator_tag;
+                using difference_type = std::ptrdiff_t;
+                using reference = typename row_access<Columns>::reference;
+                using value_type = reference;
+
+                struct pointer {
+                    reference row;
+
+                    constexpr const reference* operator->() const {
+                        return std::addressof(row);
+                    }
+                };
+
+                constexpr row_iterator() = default;
+                constexpr row_iterator(Columns* columns, difference_type index)
+                    : m_columns(columns), m_index(index) {}
+
+                template<typename Other> requires std::is_convertible_v<Other*, Columns*>
+                constexpr row_iterator(const row_iterator<Other>& other)
+                    : m_columns(other.m_columns), m_index(other.m_index) {}
+
+                constexpr reference operator*() const {
+                    return row_access<Columns>::get(*m_columns, static_cast<std::size_t>(m_index));
+                }
+
+                constexpr pointer operator->() const { return {**this}; }
+                constexpr reference operator[](difference_type offset) const { return *(*this + offset); }
+
+                constexpr row_iterator& operator++() { ++m_index; return *this; }
+                constexpr row_iterator operator++(int) { auto old = *this; ++*this; return old; }
+                constexpr row_iterator& operator--() { --m_index; return *this; }
+                constexpr row_iterator operator--(int) { auto old = *this; --*this; return old; }
+                constexpr row_iterator& operator+=(difference_type offset) { m_index += offset; return *this; }
+                constexpr row_iterator& operator-=(difference_type offset) { m_index -= offset; return *this; }
+
+                friend constexpr row_iterator operator+(row_iterator it, difference_type offset) {
+                    return it += offset;
+                }
+                friend constexpr row_iterator operator+(difference_type offset, row_iterator it) {
+                    return it += offset;
+                }
+                friend constexpr row_iterator operator-(row_iterator it, difference_type offset) {
+                    return it -= offset;
+                }
+                friend constexpr difference_type operator-(row_iterator left, row_iterator right) {
+                    return left.m_index - right.m_index;
+                }
+                friend constexpr bool operator==(const row_iterator&, const row_iterator&) = default;
+                friend constexpr auto operator<=>(const row_iterator&, const row_iterator&) = default;
+            };
+
+            template<typename Columns>
+            class rows_view : public std::ranges::view_interface<rows_view<Columns>> {
+                Columns* m_columns = nullptr;
+                std::size_t m_size = 0;
+
+            public:
+                using iterator = row_iterator<Columns>;
+
+                constexpr rows_view() = default;
+                constexpr explicit rows_view(Columns& columns)
+                    : m_columns(std::addressof(columns)), m_size(row_access<Columns>::size(columns)) {}
+
+                constexpr iterator begin() const { return {m_columns, 0}; }
+                constexpr iterator end() const { return {m_columns, static_cast<std::ptrdiff_t>(m_size)}; }
+                constexpr std::size_t size() const { return m_size; }
+            };
+        }
+
+        // 列要素への参照・プロキシを、同名のメンバを持つ行として返す。
+        // 最短の列長を行数とし、列のないスキーマは 0 行とする。
+        template<typename Columns>
+        [[nodiscard]] constexpr auto rows(Columns& columns) {
+            return reflection_detail::rows_view<Columns>(columns);
+        }
+
+        template<typename Columns>
+        void rows(const Columns&&) = delete;
+    }
+#endif
+
 }
 
-#endif //SAITEKIKUUKAN_HPP
+// 行ビューが一時オブジェクトでも、列ストレージが生きていればイテレータを利用できる。
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+namespace std::ranges {
+    template<typename Columns>
+    inline constexpr bool enable_borrowed_range<
+        ::SAITEKIKUUKAN_NAMESPACE::storage::reflection_detail::rows_view<Columns>> = true;
+}
+#endif
+
+#endif // SAITEKIKUUKAN_HPP

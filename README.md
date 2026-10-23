@@ -131,7 +131,7 @@ use `{}` when declaring fixed-size storage to zero-initialize scalar columns.
 Records must be non-union aggregates without base classes, reference members, or bit-fields.
 Static members are omitted; nested structs remain individual column element types.
 GCC 16 requires `-std=c++26 -freflection`. Legacy type-pack buffers build without reflection enabled.
-The implementation is integrated into `saitekikuukan.hpp`; `saitekikuukan_reflection.hpp` is a compatibility entry point.
+The implementation is contained in the single `saitekikuukan.hpp` header.
 
 ```sh
 cmake -S . -B build/reflection -DCMAKE_CXX_COMPILER=g++-16 \

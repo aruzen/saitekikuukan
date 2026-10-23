@@ -34,7 +34,7 @@ struct throwing_value {
     }
 };
 
-// Existing custom storage only needs entries and the original storage protocol.
+// 従来のカスタムストレージは entries と既存の操作契約だけで利用できる。
 template<typename ID, std::size_t Size, typename... Types>
 struct legacy_storage : kk::storage::static_storage<ID, Size, Types...> {
 private:
