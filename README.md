@@ -16,7 +16,7 @@ It leverages template parameter packs and metaprogramming to easily handle SoA, 
   - Safe and readable code with `if constexpr` and `concepts`
 
 - **Modern C++ Support** ✅  
-  - Compatible with C++17/20/26  
+  - Built with C++26; reflection features require a supporting compiler
   - Utilizes `std::expected`, `constexpr`, and `concepts`
 
 - **Memory-Efficient Design** ✅  
@@ -36,13 +36,54 @@ It leverages template parameter packs and metaprogramming to easily handle SoA, 
 
 Since it’s header-only, just copy `include/saitekikuukan.hpp` into your project!
 
-## Named SoA from a struct (C++26 prototype)
+## Struct schemas for buffer (C++26)
 
-`saitekikuukan_reflection.hpp` generates a column aggregate with the original member names.
+`record_buffer<T>` is an alias for the existing `buffer` with a `record<T>` schema.
+Reflection generates named columns and row references; the existing buffer manages sizes, IDs, insertion, erasure, and iteration.
+
+```cpp
+#include "saitekikuukan.hpp"
+#include <string>
+
+struct particle {
+    float x, y;
+    std::string name;
+};
+
+kk::record_buffer<particle> particles{};
+auto inserted = particles.push_back(particle{1.0f, 2.0f, "first"});
+auto& storage = particles.storage.entries;
+storage.x[0] += 1.0f;
+auto& [x, y, name] = storage;
+
+auto it = particles.begin();
+it->x += 1.0f;
+it->get<0>() += 1.0f;
+auto id = it->id();
+particles.get<0>(id).value().get() = 5.0f;
+for (auto row : particles)
+    row.y += 2.0f;
+```
+
+Fixed column capacity is separate from the active row count, `particles.size()`.
+`begin()` / `end()` iterate over active rows only.
+Select dynamic columns with `record_buffer<particle, generator::iota, eventsystem::dummy, storage::dynamic_storage>`.
+The existing `buffer<Generator, Events, Storage, Size, Types...>` and tuple-based `storage.entries` remain supported.
+A struct without an explicit `record<T>` schema remains one column element type.
+
+`push_back` accepts either a record or individual column values. Configure existing event registries through `events()`;
+both schemas share pre-insertion changes/cancellation and post-insertion notifications.
+For ordinary columns, ID-based `get<N>(id)` returns `expected<reference_wrapper<T>, error_code>`.
+Record member names `id`, `get`, `parent`, and `index` are reserved for the row API.
+Reacquire row references after operations that invalidate column references, such as reallocation.
+
+### Generating column storage alone
+
+`saitekikuukan.hpp` also generates column aggregates with the original member names.
 Each member owns its array or vector directly and supports both named access and structured bindings.
 
 ```cpp
-#include "saitekikuukan_reflection.hpp"
+#include "saitekikuukan.hpp"
 #include <string>
 
 struct particle {
@@ -89,12 +130,13 @@ use `{}` when declaring fixed-size storage to zero-initialize scalar columns.
 
 Records must be non-union aggregates without base classes, reference members, or bit-fields.
 Static members are omitted; nested structs remain individual column element types.
-This header is independent of the existing header. GCC 16 requires `-std=c++26 -freflection`.
+GCC 16 requires `-std=c++26 -freflection`. Legacy type-pack buffers build without reflection enabled.
+The implementation is integrated into `saitekikuukan.hpp`; `saitekikuukan_reflection.hpp` is a compatibility entry point.
 
 ```sh
 cmake -S . -B build/reflection -DCMAKE_CXX_COMPILER=g++-16 \
   -DSAITEKIKUUKAN_BUILD_REFLECTION_TESTS=ON
-cmake --build build/reflection --target reflection-test
+cmake --build build/reflection --target buffer-test reflection-test
 ctest --test-dir build/reflection --output-on-failure
 ```
 

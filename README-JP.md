@@ -16,7 +16,7 @@
   - `if constexpr` と `concepts` による安全で可読性の高いコード
 
 - **最新 C++ 機能対応** ✅  
-  - C++17/20/26 に対応  
+  - C++26 でビルド。リフレクション機能には対応コンパイラが必要
   - `std::expected`, `constexpr`, `concepts` を活用
 
 - **省メモリ設計** ✅  
@@ -36,13 +36,53 @@
 
 ヘッダオンリーなので、プロジェクトに `include/saitekikuukan.hpp` をコピーしてください！
 
-## 構造体から名前付き SoA を生成する（C++26 試作）
+## 構造体を buffer のスキーマにする（C++26）
 
-`saitekikuukan_reflection.hpp` は、構造体の各メンバを同名の列配列に変換します。
+`record_buffer<T>` は既存の `buffer` に `record<T>` スキーマを渡すエイリアスです。
+構造体から名前付きの列と行参照を生成し、要素数・ID・挿入・削除・イテレータを既存の経路で管理します。
+
+```cpp
+#include "saitekikuukan.hpp"
+#include <string>
+
+struct particle {
+    float x, y;
+    std::string name;
+};
+
+kk::record_buffer<particle> particles{};
+auto inserted = particles.push_back(particle{1.0f, 2.0f, "first"});
+auto& storage = particles.storage.entries;
+storage.x[0] += 1.0f;
+auto& [x, y, name] = storage;
+
+auto it = particles.begin();
+it->x += 1.0f;
+it->get<0>() += 1.0f;
+auto id = it->id();
+particles.get<0>(id).value().get() = 5.0f;
+for (auto row : particles)
+    row.y += 2.0f;
+```
+
+固定長列の容量と、有効な行数 `particles.size()` は別です。`begin()` / `end()` は有効な行だけを走査します。
+可変長版は `record_buffer<particle, generator::iota, eventsystem::dummy, storage::dynamic_storage>` で選べます。
+従来の `buffer<Generator, Events, Storage, Size, Types...>` とタプルの `storage.entries` もそのまま使えます。
+`record<T>` を明示しない構造体は従来どおり一つの列の要素型として扱います。
+
+`push_back` は構造体と列ごとの引数の両方に対応します。`events()` から既存のイベント登録クラスを設定でき、
+挿入前の変更・キャンセルと挿入後の通知を両形式で共通に処理します。
+ID による `get<N>(id)` は、通常の列では `expected<reference_wrapper<T>, error_code>` を返します。
+`id`・`get`・`parent`・`index` は行 API 用の名前なので、record スキーマのメンバ名には使えません。
+列の再確保などで参照が無効になる操作の後は、取得済みの行参照を取り直してください。
+
+### 列ストレージだけを生成する
+
+`saitekikuukan.hpp` から、構造体の各メンバを同名の列配列に変換する API も使えます。
 配列そのものをメンバとして保持し、`storage.x` と構造化束縛の両方でアクセスできます。
 
 ```cpp
-#include "saitekikuukan_reflection.hpp"
+#include "saitekikuukan.hpp"
 #include <string>
 
 struct particle {
@@ -89,12 +129,13 @@ auto readonly = kk::storage::rows(std::as_const(storage));
 
 対象は基底クラス・参照メンバ・ビットフィールドを持たない、union 以外の集成体です。
 静的メンバは列に含まれず、ネストした構造体は一つの列の要素型になります。
-通常のヘッダとは独立しており、GCC 16 では `-std=c++26 -freflection` が必要です。
+GCC 16 では `-std=c++26 -freflection` が必要です。リフレクションを使わない従来形式は通常の設定でビルドできます。
+実装は `saitekikuukan.hpp` に統合されています。`saitekikuukan_reflection.hpp` は互換用の入口です。
 
 ```sh
 cmake -S . -B build/reflection -DCMAKE_CXX_COMPILER=g++-16 \
   -DSAITEKIKUUKAN_BUILD_REFLECTION_TESTS=ON
-cmake --build build/reflection --target reflection-test
+cmake --build build/reflection --target buffer-test reflection-test
 ctest --test-dir build/reflection --output-on-failure
 ```
 

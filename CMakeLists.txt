@@ -6,9 +6,10 @@ set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -march=native -ftree
 
 add_subdirectory(test/speed-test)
 add_subdirectory(test/develop-test)
+enable_testing()
+add_subdirectory(test/buffer-test)
 
-option(SAITEKIKUUKAN_BUILD_REFLECTION_TESTS "Build the C++26 reflection prototype tests" OFF)
+option(SAITEKIKUUKAN_BUILD_REFLECTION_TESTS "Build the C++26 reflection tests" OFF)
 if(SAITEKIKUUKAN_BUILD_REFLECTION_TESTS)
-    enable_testing()
     add_subdirectory(test/reflection-test)
 endif()

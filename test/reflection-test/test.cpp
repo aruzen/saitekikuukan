@@ -1,4 +1,5 @@
-#include "saitekikuukan_reflection.hpp"
+#include "saitekikuukan.hpp"
+#include "../buffer-test/checks.hpp"
 
 #include <cstdlib>
 #include <memory>
@@ -26,6 +27,63 @@ struct nested {
 struct flag {
     bool active;
 };
+
+struct item {
+    int x, y;
+    std::string name;
+};
+
+struct movable_item {
+    std::unique_ptr<int> value;
+};
+
+template<template<typename, std::size_t, typename...> typename Storage>
+void check_integrated_buffer() {
+    using values_type = kk::record_buffer<item, kk::generator::iota, kk::eventsystem::dummy, Storage, 4>;
+    static_assert(std::is_same_v<values_type,
+        kk::buffer<kk::generator::iota, kk::eventsystem::dummy, Storage, 4, kk::record<item>>>);
+    buffer_test::check_buffer<values_type>();
+    using events_type = kk::record_buffer<item, kk::generator::iota, buffer_test::insert_events, Storage, 2>;
+    buffer_test::check_events<events_type>();
+    using registry = kk::eventsystem::registration<buffer_test::before_insert>;
+    using single = kk::eventsystem::one_event_each_only<buffer_test::before_insert>;
+    buffer_test::check_registered_events<kk::record_buffer<item, kk::generator::iota, registry, Storage, 4>>();
+    buffer_test::check_registered_events<kk::record_buffer<item, kk::generator::iota, single, Storage, 4>>();
+
+    values_type values{};
+    item original{1, 2, "first"};
+    buffer_test::check(values.push_back(original).has_value());
+    buffer_test::check(original.name == "first");
+    buffer_test::check(values.push_back(item{3, 4, "second"}).has_value());
+    auto& columns = values.storage.entries;
+    buffer_test::check(columns.x[0] == 1 && columns.y[1] == 4 && columns.name[1] == "second");
+    auto& [x, y, name] = columns;
+    buffer_test::check(std::addressof(x) == std::addressof(values.template get<0>()));
+    values.begin()->x = 5;
+    values.begin()->name = "updated";
+    buffer_test::check(x[0] == 5 && name[0] == "updated");
+    buffer_test::check(values.begin()->id() == 0);
+    buffer_test::check(values[0].value().x == 5);
+    for (auto row : values)
+        row.y += 10;
+    buffer_test::check(y[0] == 12 && y[1] == 14 && values.size() == 2);
+    const auto& constant = values;
+    static_assert(std::is_same_v<decltype(constant.begin()->x), const int&>);
+    static_assert(std::is_same_v<decltype(constant[0].value().name), const std::string&>);
+    buffer_test::check(constant.begin()->name == "updated");
+    buffer_test::check(values.erase(0).has_value());
+    buffer_test::check(values.begin()->id() == 1 && values.begin()->name == "second");
+
+    kk::record_buffer<movable_item, kk::generator::iota, kk::eventsystem::dummy, Storage, 4> movable{};
+    buffer_test::check(movable.push_back(movable_item{std::make_unique<int>(42)}).has_value());
+    buffer_test::check(*movable.begin()->value == 42);
+
+    kk::record_buffer<empty, kk::generator::iota, kk::eventsystem::dummy, Storage, 4> no_fields{};
+    buffer_test::check(no_fields.push_back(empty{}).has_value());
+    buffer_test::check(no_fields.push_back(empty{}).has_value());
+    buffer_test::check(no_fields.end() - no_fields.begin() == 2);
+    buffer_test::check(no_fields.begin()->id() == 0);
+}
 
 template<typename T>
 using small_column = std::array<T, 2>;
@@ -61,7 +119,27 @@ extern "C" void update_rows(positions& storage, float dx, float dy) {
     }
 }
 
+using position_buffer = kk::record_buffer<position, kk::generator::iota,
+    kk::eventsystem::dummy, kk::storage::static_storage, 10240>;
+
+extern "C" void update_buffer_direct(position_buffer& values, float dx, float dy) {
+    auto& columns = values.storage.entries;
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        columns.x[i] += dx;
+        columns.y[i] += dy;
+    }
+}
+
+extern "C" void update_buffer_iterator(position_buffer& values, float dx, float dy) {
+    for (auto it = values.begin(); it != values.end(); ++it) {
+        it->x += dx;
+        it->y += dy;
+    }
+}
+
 int main() {
+    check_integrated_buffer<kk::storage::static_storage>();
+    check_integrated_buffer<kk::storage::dynamic_storage>();
     using static_columns = kk::storage::static_soa<particle, 4>;
     using dynamic_columns = kk::storage::dynamic_soa<particle>;
     static_assert(std::is_aggregate_v<static_columns>);
@@ -205,4 +283,15 @@ int main() {
         check(a.y[i] == 3.0f && a.y[i] == b.y[i]);
         check(a.x[i] == c.x[i] && a.y[i] == c.y[i]);
     }
+
+    position_buffer direct{}, iterated{};
+    check(direct.resize(128).has_value() && iterated.resize(128).has_value());
+    update_buffer_direct(direct, 2.0f, 3.0f);
+    update_buffer_iterator(iterated, 2.0f, 3.0f);
+    for (std::size_t i = 0; i < direct.size(); ++i) {
+        check(direct.storage.entries.x[i] == iterated.storage.entries.x[i]);
+        check(direct.storage.entries.y[i] == iterated.storage.entries.y[i]);
+    }
+    check(iterated.storage.entries.x[0] == 2.0f && iterated.storage.entries.y[0] == 3.0f);
+    check(iterated.storage.entries.x[128] == 0.0f && iterated.storage.entries.y[128] == 0.0f);
 }
