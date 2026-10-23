@@ -1,15 +1,50 @@
 cmake_minimum_required(VERSION 3.28)
-project(saitekikuukan)
+project(saitekikuukan LANGUAGES CXX)
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 
-set(CMAKE_CXX_STANDARD 26)
-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -march=native -ftree-vectorize")
+add_library(saitekikuukan INTERFACE)
+add_library(saitekikuukan::saitekikuukan ALIAS saitekikuukan)
+target_compile_features(saitekikuukan INTERFACE cxx_std_23)
+target_include_directories(saitekikuukan INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
-add_subdirectory(test/speed-test)
-add_subdirectory(test/develop-test)
-enable_testing()
-add_subdirectory(test/buffer-test)
+# reflection が必要な利用側だけ、このターゲットを選択する。
+add_library(saitekikuukan_reflection INTERFACE)
+set_target_properties(saitekikuukan_reflection PROPERTIES EXPORT_NAME reflection)
+add_library(saitekikuukan::reflection ALIAS saitekikuukan_reflection)
+target_link_libraries(saitekikuukan_reflection INTERFACE saitekikuukan)
+target_compile_features(saitekikuukan_reflection INTERFACE cxx_std_26)
+target_compile_options(saitekikuukan_reflection INTERFACE $<$<CXX_COMPILER_ID:GNU>:-freflection>)
 
+option(SAITEKIKUUKAN_BUILD_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})
+option(SAITEKIKUUKAN_BUILD_BENCHMARKS "Build benchmarks and development examples" OFF)
 option(SAITEKIKUUKAN_BUILD_REFLECTION_TESTS "Build the C++26 reflection tests" OFF)
+if(SAITEKIKUUKAN_BUILD_TESTS OR SAITEKIKUUKAN_BUILD_REFLECTION_TESTS)
+    enable_testing()
+endif()
+if(SAITEKIKUUKAN_BUILD_TESTS)
+    add_subdirectory(test/buffer-test)
+    add_subdirectory(test/soa-test)
+endif()
 if(SAITEKIKUUKAN_BUILD_REFLECTION_TESTS)
     add_subdirectory(test/reflection-test)
+    add_executable(soa-reflection-test test/soa-test/test.cpp)
+    target_link_libraries(soa-reflection-test PRIVATE saitekikuukan::reflection)
+    add_test(NAME soa-reflection-test COMMAND soa-reflection-test)
 endif()
+if(SAITEKIKUUKAN_BUILD_BENCHMARKS)
+    add_subdirectory(test/speed-test)
+    add_subdirectory(test/develop-test)
+endif()
+
+install(TARGETS saitekikuukan saitekikuukan_reflection EXPORT saitekikuukanTargets)
+install(FILES include/saitekikuukan.hpp DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(EXPORT saitekikuukanTargets NAMESPACE saitekikuukan::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/saitekikuukan)
+configure_package_config_file(cmake/saitekikuukanConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/saitekikuukanConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/saitekikuukan)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/saitekikuukanConfig.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/saitekikuukan)
