@@ -26,6 +26,7 @@
 #include <optional>
 #include <ranges>
 #include <source_location>
+#include <stdexcept>
 #include <string>
 #include <tuple>
 #include <type_traits>
@@ -532,7 +533,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             using event_types = type_list<>;
 
             template<typename Event>
-            void on(Event &e) {};
+            void on(Event&) {};
         };
     }
 
@@ -657,6 +658,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             static constexpr bool named = false;
             using element_types = type_list<Types...>;
             using record_type = void;
+            using value_type = std::tuple<Types...>;
 
             template<template<typename> typename Column>
             using columns = std::tuple<Column<Types>...>;
@@ -671,6 +673,11 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
             template<typename Columns>
             static constexpr fields<Columns> row(Columns&, std::size_t) { return {}; }
+
+            template<typename Value, typename Function>
+            static constexpr decltype(auto) apply_value(Value&& value, Function&& function) {
+                return std::apply(std::forward<Function>(function), std::forward<Value>(value));
+            }
         };
 
 #if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
@@ -687,6 +694,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         struct schema<record<Record>> {
             static constexpr bool named = true;
             using record_type = Record;
+            using value_type = Record;
             using element_types = [:record_element_types<Record>():];
             static constexpr auto members = std::define_static_array(
                 std::meta::nonstatic_data_members_of(^^Record, std::meta::access_context::current()));
@@ -723,6 +731,11 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                     return std::invoke(std::forward<Function>(function),
                         std::forward<Value>(value).[:members[Indices]:]...);
                 }(std::make_index_sequence<members.size()>{});
+            }
+
+            template<typename Value, typename Function>
+            static constexpr decltype(auto) apply_value(Value&& value, Function&& function) {
+                return apply_record(std::forward<Value>(value), std::forward<Function>(function));
             }
         };
 #endif
@@ -778,188 +791,347 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
         constexpr size_t DynamicSizeUnlimited = std::numeric_limits<size_t>::max();
 
-        template<typename IDType, size_t MaxSize = DynamicSizeUnlimited, typename ...Types>
-        struct dynamic_storage {
-            static constexpr size_t default_max_size = DynamicSizeUnlimited;
-
+        // 列コンテナの選択だけを方針に分離する。独自方針でも同じ行管理を使える。
+        template<size_t MaxSize = DynamicSizeUnlimited>
+        struct dynamic_layout {
+            static constexpr bool resizable = true;
             static constexpr size_t max_size = MaxSize;
-            using id_type = IDType;
-            using schema_type = _detail::schema<Types...>;
-            using element_types = typename schema_type::element_types;
-
-            std::vector<id_type> ids;
-            typename dynamic_entries_type<Types...>::result entries;
-
-            template<std::size_t N>
-            decltype(auto) get() { return schema_type::template column<N>(entries); }
-
-            template<std::size_t N>
-            decltype(auto) get() const { return schema_type::template column<N>(entries); }
-
-            size_t size() const {
-                return ids.size();
-            }
-
-            bool empty() const {
-                return ids.empty();
-            }
-
-            void clear() {
-                ids.clear();
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (get<Is>().clear(), ...);
-                }(std::make_index_sequence<element_types::size>{});
-            }
-
-            std::expected<void, error_code> resize(size_t size) {
-                if (size > max_size)
-                    return std::unexpected{error_code::buffer_over};
-                auto old_size = this->size();
-                try {
-                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                        (get<Is>().resize(size), ...);
-                    }(std::make_index_sequence<element_types::size>{});
-                    ids.resize(size);
-                } catch (...) {
-                    rollback(old_size);
-                    throw;
-                }
-                return {};
-            }
-
-            template<typename ...Args>
-            std::expected<void, error_code> push_back(id_type id, Args &&... args) {
-                static_assert(sizeof...(Args) == element_types::size);
-                if (size() >= max_size)
-                    return std::unexpected{error_code::buffer_over};
-                auto old_size = size();
-                try {
-                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                        (get<Is>().push_back(std::forward<Args>(args)), ...);
-                    }(std::make_index_sequence<element_types::size>{});
-                    ids.push_back(id);
-                } catch (...) {
-                    rollback(old_size);
-                    throw;
-                }
-                return {};
-            }
-
-            void pop_back() {
-                if (empty())
-                    return;
-                ids.pop_back();
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (get<Is>().pop_back(), ...);
-                }(std::make_index_sequence<element_types::size>{});
-            }
-
-            std::expected<void, error_code> swap(size_t a_idx, size_t b_idx) {
-                if (a_idx >= size() || b_idx >= size())
-                    return std::unexpected<error_code>{error_code::buffer_over};
-                std::swap(ids[a_idx], ids[b_idx]);
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (std::swap(get<Is>()[a_idx], get<Is>()[b_idx]), ...);
-                }(std::make_index_sequence<element_types::size>{});
-                return {};
-            }
-
-            std::expected<size_t, error_code> index(id_type id) const {
-                for (size_t i = 0; i < size(); i++) {
-                    if (ids[i] == id)
-                        return i;
-                }
-                return std::unexpected{error_code::not_found_id};
-            }
-
-        private:
-            void rollback(size_t size) {
-                while (ids.size() > size)
-                    ids.pop_back();
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    ([&] { while (get<Is>().size() > size) get<Is>().pop_back(); }(), ...);
-                }(std::make_index_sequence<element_types::size>{});
-            }
+            template<typename T> using column = std::vector<T>;
         };
 
-        template<typename IDType, size_t MaxSize = 1024, typename ...Types>
-        struct static_storage {
-            static constexpr size_t default_max_size = 1024;
+        template<size_t Size>
+        struct fixed_layout {
+            static constexpr bool resizable = false;
+            static constexpr size_t max_size = Size;
+            template<typename T> using column = std::array<T, Size>;
+        };
 
-            static constexpr size_t max_size = MaxSize;
-            using id_type = IDType;
-            using schema_type = _detail::schema<Types...>;
-            using element_types = typename schema_type::element_types;
-
-        private:
-            size_t m_end_index = 0;
+        // ID やイベントに依存しない低水準の列管理。公開 entries の長さを直接変更しないこと。
+        template<typename Layout, typename... Types>
+        class basic_columns {
         public:
-            std::array<id_type, max_size> ids;
-            typename static_entries_type<max_size, Types...>::result entries;
+            using schema_type = _detail::schema<Types...>;
+            using element_types = typename schema_type::element_types;
+            using value_type = typename schema_type::value_type;
+            using data_tuple = typename element_types::template apply<std::tuple>;
+            using columns_type = typename schema_type::template columns<Layout::template column>;
 
-            template<std::size_t N>
-            decltype(auto) get() { return schema_type::template column<N>(entries); }
+        private:
+            template<typename... Values>
+            using copy_traits = std::bool_constant<(std::is_copy_constructible_v<Values> && ...)>;
+            template<typename... Values>
+            using relocation_traits = std::bool_constant<
+                ((std::is_copy_constructible_v<Values> || std::is_nothrow_move_constructible_v<Values>) && ...)>;
+            static constexpr bool copyable = element_types::template apply<copy_traits>::value;
+            static_assert(!Layout::resizable || element_types::template apply<relocation_traits>::value,
+                "Resizable columns require copy construction or noexcept move construction");
+            size_t m_size = 0;
 
-            template<std::size_t N>
-            decltype(auto) get() const { return schema_type::template column<N>(entries); }
-
-            size_t size() const {
-                return m_end_index;
-            }
-
-            bool empty() const {
-                return m_end_index == 0;
-            }
-
-            void clear() {
-                m_end_index = 0;
-            }
-
-            std::expected<void, error_code> resize(size_t size) {
-                if (max_size < size) {
-                    return std::unexpected{error_code::buffer_over};
+            static columns_type take_columns(basic_columns& other) noexcept(
+                std::is_nothrow_move_constructible_v<columns_type>) {
+                if constexpr (std::is_nothrow_move_constructible_v<columns_type>) {
+                    return std::move(other.entries);
+                } else if constexpr (copyable) {
+                    return other.entries;
                 } else {
-                    this->m_end_index = size;
-                    return {};
+                    // 列の移動中に失敗しても、移動元の行数と列長を一致させる。
+                    try { return std::move(other.entries); }
+                    catch (...) { other.clear(); throw; }
                 }
             }
 
-            template<typename ...Args>
-            std::expected<void, error_code> push_back(id_type id, Args &&... args) {
-                static_assert(sizeof...(Args) == element_types::size);
-                if (size() >= max_size)
+            void rollback() noexcept {
+                if constexpr (Layout::resizable) {
+                    [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                        ([&] { while (get<Indices>().size() > m_size) get<Indices>().pop_back(); }(), ...);
+                    }(std::make_index_sequence<element_types::size>{});
+                }
+            }
+
+        protected:
+            void append_values(data_tuple& values) {
+                if (size() == max_size())
+                    throw std::length_error("Column count exceeds max_size");
+                if constexpr (Layout::resizable) {
+                    if (size() == capacity())
+                        reserve(size() + std::min(max_size() - size(), size() / 2 + 1));
+                    try {
+                        [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                            (get<Indices>().push_back(std::move_if_noexcept(std::get<Indices>(values))), ...);
+                        }(std::make_index_sequence<element_types::size>{});
+                    } catch (...) {
+                        rollback();
+                        throw;
+                    }
+                } else {
+                    [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                        ((get<Indices>()[m_size] = std::move_if_noexcept(std::get<Indices>(values))), ...);
+                    }(std::make_index_sequence<element_types::size>{});
+                }
+                ++m_size;
+            }
+
+        public:
+            columns_type entries{};
+
+            basic_columns() = default;
+            basic_columns(const basic_columns&) requires copyable = default;
+            basic_columns(const basic_columns&) requires (!copyable) = delete;
+            basic_columns(basic_columns&& other) noexcept(std::is_nothrow_move_constructible_v<columns_type>)
+                : m_size(other.m_size), entries(take_columns(other)) { other.clear(); }
+
+            static constexpr bool nothrow_swap = []<size_t... Indices>(std::index_sequence<Indices...>) {
+                return (std::is_nothrow_swappable_v<decltype(schema_type::template column<Indices>(
+                    std::declval<columns_type&>()))> && ...);
+            }(std::make_index_sequence<element_types::size>{});
+
+            basic_columns& operator=(const basic_columns& other) requires copyable {
+                if (this != std::addressof(other)) {
+                    basic_columns copy(other);
+                    swap(copy);
+                }
+                return *this;
+            }
+            basic_columns& operator=(const basic_columns&) requires (!copyable) = delete;
+            basic_columns& operator=(basic_columns&& other) noexcept(
+                std::is_nothrow_move_constructible_v<columns_type> && nothrow_swap) {
+                basic_columns moved(std::move(other));
+                swap(moved);
+                return *this;
+            }
+
+            void swap(basic_columns& other) noexcept(nothrow_swap) {
+                using std::swap;
+                [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                    (swap(get<Indices>(), other.template get<Indices>()), ...);
+                }(std::make_index_sequence<element_types::size>{});
+                swap(m_size, other.m_size);
+            }
+
+            template<size_t N> decltype(auto) get() { return schema_type::template column<N>(entries); }
+            template<size_t N> decltype(auto) get() const { return schema_type::template column<N>(entries); }
+            [[nodiscard]] size_t size() const noexcept { return m_size; }
+            [[nodiscard]] bool empty() const noexcept { return m_size == 0; }
+
+            [[nodiscard]] size_t max_size() const noexcept {
+                auto limit = std::min(Layout::max_size, static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max()));
+                if constexpr (Layout::resizable) {
+                    [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                        ([&] { if constexpr (requires { get<Indices>().max_size(); })
+                            limit = std::min(limit, get<Indices>().max_size()); }(), ...);
+                    }(std::make_index_sequence<element_types::size>{});
+                }
+                return limit;
+            }
+
+            [[nodiscard]] size_t capacity() const noexcept {
+                auto count = max_size();
+                if constexpr (Layout::resizable) {
+                    [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                        ([&] { if constexpr (requires { get<Indices>().capacity(); })
+                            count = std::min(count, get<Indices>().capacity());
+                            else count = std::min(count, get<Indices>().size()); }(), ...);
+                    }(std::make_index_sequence<element_types::size>{});
+                }
+                return count;
+            }
+
+            void reserve(size_t count) {
+                if (count > max_size())
+                    throw std::length_error("Column capacity exceeds max_size");
+                if constexpr (Layout::resizable) {
+                    [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                        ([&] { if constexpr (requires { get<Indices>().reserve(count); })
+                            get<Indices>().reserve(count); }(), ...);
+                    }(std::make_index_sequence<element_types::size>{});
+                }
+            }
+
+            template<typename... Args> requires (sizeof...(Args) == element_types::size)
+            void push_back(Args&&... args) {
+                // 自分の列への参照も、いずれかの列を再確保する前に退避する。
+                data_tuple values(std::forward<Args>(args)...);
+                append_values(values);
+            }
+
+            void push_value(value_type value) {
+                schema_type::apply_value(std::move(value), [&](auto&&... values) {
+                    push_back(std::forward<decltype(values)>(values)...);
+                });
+            }
+
+            void resize(size_t count) requires std::default_initializable<value_type> {
+                if (count > max_size())
+                    throw std::length_error("Column count exceeds max_size");
+                if constexpr (element_types::size == 0) {
+                    m_size = count;
+                } else if (count < size()) {
+                    while (size() > count) pop_back();
+                } else {
+                    reserve(count);
+                    auto old_size = size();
+                    try {
+                        while (size() < count) push_value(value_type{});
+                    } catch (...) {
+                        while (size() > old_size) pop_back();
+                        throw;
+                    }
+                }
+            }
+
+            void pop_back() noexcept {
+                if (empty()) return;
+                if constexpr (Layout::resizable) {
+                    [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                        (get<Indices>().pop_back(), ...);
+                    }(std::make_index_sequence<element_types::size>{});
+                }
+                --m_size;
+            }
+
+            void clear() noexcept {
+                if constexpr (Layout::resizable) {
+                    [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                        (get<Indices>().clear(), ...);
+                    }(std::make_index_sequence<element_types::size>{});
+                }
+                m_size = 0;
+            }
+
+            void swap_rows(size_t left, size_t right) {
+                if (left >= size() || right >= size()) throw std::out_of_range("Row index exceeds size");
+                [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                    (std::ranges::iter_swap(std::ranges::begin(get<Indices>()) + left,
+                                           std::ranges::begin(get<Indices>()) + right), ...);
+                }(std::make_index_sequence<element_types::size>{});
+            }
+
+        };
+
+        template<typename Layout, typename IDType, typename... Types>
+        struct identified_storage : basic_columns<Layout, Types...> {
+            using base_type = basic_columns<Layout, Types...>;
+            using id_type = IDType;
+            // buffer が容量 1 の型で既定値を問い合わせる従来の契約を保つ。
+            static constexpr size_t default_max_size = Layout::resizable ? DynamicSizeUnlimited : 1024;
+            static constexpr size_t max_size = Layout::max_size;
+            using id_columns_type = typename Layout::template column<id_type>;
+            id_columns_type ids{};
+
+        private:
+            static auto take_ids(identified_storage& other) noexcept(
+                std::is_nothrow_move_constructible_v<id_columns_type>) -> id_columns_type {
+                if constexpr (std::is_nothrow_move_constructible_v<id_columns_type>) {
+                    return std::move(other.ids);
+                } else {
+                    try {
+                        if constexpr (std::is_copy_constructible_v<id_type>) return other.ids;
+                        else return std::move(other.ids);
+                    } catch (...) {
+                        if constexpr (Layout::resizable) other.ids.clear();
+                        throw;
+                    }
+                }
+            }
+
+        public:
+            identified_storage() = default;
+            identified_storage(const identified_storage&) = default;
+            identified_storage(identified_storage&& other) noexcept(
+                std::is_nothrow_move_constructible_v<base_type> &&
+                std::is_nothrow_move_constructible_v<decltype(ids)>)
+                : base_type(std::move(other)), ids(take_ids(other)) {
+                if constexpr (Layout::resizable) other.ids.clear();
+            }
+            void swap(identified_storage& other) noexcept(
+                base_type::nothrow_swap && std::is_nothrow_swappable_v<decltype(ids)>) {
+                base_type::swap(other);
+                using std::swap;
+                swap(ids, other.ids);
+            }
+            identified_storage& operator=(const identified_storage& other)
+                requires std::is_copy_constructible_v<base_type> {
+                if (this != std::addressof(other)) {
+                    identified_storage copy(other);
+                    swap(copy);
+                }
+                return *this;
+            }
+            identified_storage& operator=(const identified_storage&)
+                requires (!std::is_copy_constructible_v<base_type>) = delete;
+            identified_storage& operator=(identified_storage&& other) noexcept(
+                std::is_nothrow_move_constructible_v<base_type> &&
+                std::is_nothrow_move_constructible_v<decltype(ids)> &&
+                base_type::nothrow_swap && std::is_nothrow_swappable_v<decltype(ids)>) {
+                identified_storage moved(std::move(other));
+                swap(moved);
+                return *this;
+            }
+
+            std::expected<void, error_code> resize(size_t count) {
+                if (count > base_type::max_size()) return std::unexpected{error_code::buffer_over};
+                if constexpr (Layout::resizable) {
+                    auto old_size = this->size();
+                    ids.resize(count);
+                    try { base_type::resize(count); }
+                    catch (...) {
+                        while (ids.size() > old_size) ids.pop_back();
+                        throw;
+                    }
+                } else {
+                    base_type::resize(count);
+                }
+                return {};
+            }
+
+            template<typename... Args>
+            std::expected<void, error_code> push_back(id_type id, Args&&... args) {
+                if (this->size() >= base_type::max_size()) return std::unexpected{error_code::buffer_over};
+                typename base_type::data_tuple values(std::forward<Args>(args)...);
+                if constexpr (Layout::resizable) {
+                    // ID 列から値を渡された場合にも、値を退避してから再確保する。
+                    if (ids.size() == ids.max_size()) return std::unexpected{error_code::buffer_over};
+                    if (ids.size() == ids.capacity())
+                        ids.reserve(ids.size() + std::min(ids.max_size() - ids.size(), ids.size() / 2 + 1));
+                    this->append_values(values);
+                    try { ids.push_back(std::move_if_noexcept(id)); }
+                    catch (...) { base_type::pop_back(); throw; }
+                } else {
+                    ids[this->size()] = id;
+                    this->append_values(values);
+                }
+                return {};
+            }
+
+            void pop_back() noexcept {
+                if (this->empty()) return;
+                if constexpr (Layout::resizable) ids.pop_back();
+                base_type::pop_back();
+            }
+            void clear() noexcept {
+                if constexpr (Layout::resizable) ids.clear();
+                base_type::clear();
+            }
+            std::expected<void, error_code> swap(size_t left, size_t right) {
+                if (left >= this->size() || right >= this->size())
                     return std::unexpected{error_code::buffer_over};
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    ((get<Is>()[m_end_index] = std::forward<Args>(args)), ...);
-                }(std::make_index_sequence<element_types::size>{});
-                ids[m_end_index] = id;
-                m_end_index++;
+                this->swap_rows(left, right);
+                using std::swap;
+                swap(ids[left], ids[right]);
                 return {};
             }
-
-            void pop_back() {
-                if (0 < m_end_index)
-                    m_end_index--;
-            }
-
-            std::expected<void, error_code> swap(size_t a_idx, size_t b_idx) {
-                if (a_idx >= size() || b_idx >= size())
-                    return std::unexpected<error_code>{error_code::buffer_over};
-                std::swap(ids[a_idx], ids[b_idx]);
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (std::swap(get<Is>()[a_idx], get<Is>()[b_idx]), ...);
-                }(std::make_index_sequence<element_types::size>{});
-                return {};
-            }
-
             std::expected<size_t, error_code> index(id_type id) const {
-                for (size_t i = 0; i < size(); i++) {
-                    if (ids[i] == id)
-                        return i;
-                }
+                for (size_t i = 0; i < this->size(); ++i) if (ids[i] == id) return i;
                 return std::unexpected{error_code::not_found_id};
             }
         };
+
+        template<typename IDType, size_t MaxSize = DynamicSizeUnlimited, typename... Types>
+        using dynamic_storage = identified_storage<dynamic_layout<MaxSize>, IDType, Types...>;
+
+        template<typename IDType, size_t MaxSize = 1024, typename... Types>
+        using static_storage = identified_storage<fixed_layout<MaxSize>, IDType, Types...>;
+
     }
 
     // ================================= buffer ================================
