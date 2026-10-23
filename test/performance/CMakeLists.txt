@@ -1,0 +1,8 @@
+add_executable(performance-benchmark benchmark.cpp kernels.cpp)
+target_link_libraries(performance-benchmark PRIVATE saitekikuukan::saitekikuukan)
+set_target_properties(performance-benchmark PROPERTIES INTERPROCEDURAL_OPTIMIZATION FALSE)
+if(SAITEKIKUUKAN_BUILD_REFLECTION_TESTS)
+    add_executable(performance-reflection-benchmark benchmark.cpp kernels.cpp)
+    target_link_libraries(performance-reflection-benchmark PRIVATE saitekikuukan::reflection)
+    set_target_properties(performance-reflection-benchmark PROPERTIES INTERPROCEDURAL_OPTIMIZATION FALSE)
+endif()
