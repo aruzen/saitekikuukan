@@ -597,6 +597,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                     ((std::get<Is>(entries).resize(size)), ...);
                 }(std::make_index_sequence<sizeof...(Types)>{});
+                return {};
             }
 
             template<typename ...Args>
@@ -807,7 +808,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         }
 
         std::expected<void, error_code> resize(size_t size) {
-            storage.resize(size);
+            return storage.resize(size);
         }
 
         std::expected<void, error_code> erase(id_type id) {
@@ -848,7 +849,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             size_t index;
 
             id_type id() const {
-                return parent->ids[index];
+                return parent->storage.ids[index];
             }
 
             template<size_t N>
@@ -867,7 +868,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             size_t index;
 
             id_type id() const {
-                return parent->ids[index];
+                return parent->storage.ids[index];
             }
 
             template<size_t N>
@@ -939,11 +940,11 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 return *this;
             }
 
-            operator bool() const {
+            explicit operator bool() const {
                 return m_entry.index <= m_entry.parent->size();
             }
 
-            bool operator!() {
+            bool operator!() const {
                 return m_entry.parent->size() < m_entry.index;
             }
 
@@ -1045,11 +1046,11 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 return *this;
             }
 
-            operator bool() const {
+            explicit operator bool() const {
                 return m_entry.index <= m_entry.parent->size();
             }
 
-            bool operator!() {
+            bool operator!() const {
                 return m_entry.parent->size() < m_entry.index;
             }
 

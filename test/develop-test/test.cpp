@@ -1,4 +1,5 @@
 #include "saitekikuukan.hpp"
+#include <chrono>
 #include <print>
 #include <iostream>
 
@@ -6,8 +7,8 @@ int main() {
     using namespace kk;
     constexpr size_t Size = 1024 * 10;
 
-    buffer<generator::iota, eventsystem::dummy, storage::static_storage, Size, int, int, int, int, int, int> ss;
-    buffer<generator::iota, eventsystem::dummy, storage::dynamic_storage, Size, int, int, int, int, int, int> ds;
+    buffer<generator::iota, eventsystem::dummy, storage::static_storage, Size, int, int, int, int, int, int> ss{};
+    buffer<generator::iota, eventsystem::dummy, storage::dynamic_storage, Size, int, int, int, int, int, int> ds{};
     ss.resize(Size);
     ds.resize(Size);
 

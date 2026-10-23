@@ -1,4 +1,5 @@
 #include "saitekikuukan.hpp"
+#include <chrono>
 #include <print>
 
 int main() {
@@ -10,7 +11,7 @@ int main() {
 
     constexpr size_t Size = 1024 * 10;
 
-    buffer<generator::iota, eventsystem::dummy, storage::static_storage, Size, int, int, int, int, int, int> enemies_of_array;
+    buffer<generator::iota, eventsystem::dummy, storage::static_storage, Size, int, int, int, int, int, int> enemies_of_array{};
     enemies_of_array.resize(Size);
     auto &[max_hp, hp, max_mp, mp, x, y] = enemies_of_array.storage.entries;
     auto& elem_x = enemies_of_array.get<4>();
