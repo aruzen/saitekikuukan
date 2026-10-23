@@ -42,6 +42,40 @@ struct initialized_item {
     std::string name = "default";
 };
 
+struct sequenced_item {
+    inline static int sequence = 0;
+    int number = ++sequence;
+    float value = 42;
+};
+struct destroyed_item {
+    inline static int destroyed = 0;
+    int value;
+    ~destroyed_item() { ++destroyed; }
+};
+
+void check_record_resize() {
+    kk::record_soa<position> plain;
+    plain.resize(8);
+    for (auto row : plain) buffer_test::check(row.x == 0 && row.y == 0);
+    plain[0].x = 7;
+    plain.resize(1);
+    plain.resize(4);
+    buffer_test::check(plain[0].x == 7 && plain[1].x == 0);
+
+    sequenced_item::sequence = 0;
+    kk::record_soa<sequenced_item> sequenced;
+    sequenced.resize(3);
+    sequenced.resize(5);
+    buffer_test::check(sequenced_item::sequence == 5);
+    for (std::size_t i = 0; i < sequenced.size(); ++i)
+        buffer_test::check(sequenced[i].number == static_cast<int>(i + 1) && sequenced[i].value == 42);
+
+    destroyed_item::destroyed = 0;
+    kk::record_soa<destroyed_item> destroyed;
+    destroyed.resize(3);
+    buffer_test::check(destroyed_item::destroyed == 3);
+}
+
 template<template<typename, std::size_t, typename...> typename Storage>
 void check_integrated_buffer() {
     kk::record_buffer<initialized_item, kk::generator::iota, kk::eventsystem::dummy, Storage, 4> initialized;
@@ -150,6 +184,7 @@ extern "C" void update_buffer_iterator(position_buffer& values, float dx, float 
 }
 
 int main() {
+    check_record_resize();
     check_integrated_buffer<kk::storage::static_storage>();
     check_integrated_buffer<kk::storage::dynamic_storage>();
     using static_columns = kk::storage::static_soa<particle, 4>;
