@@ -16,7 +16,7 @@ It leverages template parameter packs and metaprogramming to easily handle SoA, 
   - Safe and readable code with `if constexpr` and `concepts`
 
 - **Modern C++ Support** ✅  
-  - Built with C++26; reflection features require a supporting compiler
+  - C++23 for type packs; C++26 with reflection for automatic struct schemas
   - Utilizes `std::expected`, `constexpr`, and `concepts`
 
 - **Memory-Efficient Design** ✅  
@@ -35,6 +35,10 @@ It leverages template parameter packs and metaprogramming to easily handle SoA, 
 ## Installation
 
 Since it’s header-only, just copy `include/saitekikuukan.hpp` into your project!
+
+CMake users can use `add_subdirectory` or install and call `find_package(saitekikuukan CONFIG REQUIRED)`.
+Link `saitekikuukan::saitekikuukan` for C++23 or `saitekikuukan::reflection` for struct reflection.
+The library does not modify the parent project's standard or optimization flags.
 
 ## Struct schemas for buffer (C++26)
 
