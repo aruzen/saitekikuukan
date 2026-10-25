@@ -6,6 +6,25 @@
 
 using buffer_test::check;
 
+struct select_second {
+    template<typename Parent>
+    static constexpr decltype(auto) get(Parent& parent, std::size_t i) { return (parent[i].second); }
+};
+
+void check_projected_iterator() {
+    std::array<std::pair<int, std::string>, 3> values{{{0, "ccc"}, {1, "a"}, {2, "bb"}}};
+    using iterator = kk::_detail::indexed_iterator<decltype(values), select_second>;
+    using const_iterator = kk::_detail::indexed_iterator<const decltype(values), select_second>;
+    static_assert(std::random_access_iterator<iterator> && std::random_access_iterator<const_iterator>);
+    static_assert(std::same_as<std::iter_value_t<iterator>, std::string>);
+    static_assert(std::same_as<std::iter_reference_t<const_iterator>, const std::string&>);
+    iterator first{&values, 0}, last{&values, 3};
+    const_iterator constant = first;
+    check(first->size() == 3 && constant == first);
+    std::ranges::sort(std::ranges::subrange(first, last));
+    check(values[0] == std::pair{0, std::string("a")} && first[2] == "ccc");
+}
+
 template<typename T>
 concept temporary_columns = requires(T value) { std::move(value).columns(); };
 static_assert(!temporary_columns<kk::soa<int>>);
@@ -148,6 +167,7 @@ void check_records() {
 #endif
 
 int main() {
+    check_projected_iterator();
     check_rows<kk::soa<int, std::string>>();
     check_rows<kk::fixed_soa<8, int, std::string>>();
     check_aliasing();

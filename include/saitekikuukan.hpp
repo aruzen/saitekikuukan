@@ -1260,6 +1260,61 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
     }
 
+    // =============================== iteration ===============================
+    // 行インデックスと参照の取り出し方を分離し、列やチャンクの走査でも共有する。
+    namespace _detail {
+        struct indexed_access {
+            template<typename Parent>
+            static constexpr decltype(auto) get(Parent& parent, size_t index) { return parent[index]; }
+        };
+
+        template<typename Parent, typename Access = indexed_access>
+        class indexed_iterator {
+            template<typename, typename> friend class indexed_iterator;
+            Parent* m_parent = nullptr;
+            ptrdiff_t m_index = 0;
+
+        public:
+            using iterator_concept = std::random_access_iterator_tag;
+            using difference_type = ptrdiff_t;
+            using reference = decltype(Access::get(std::declval<Parent&>(), size_t{}));
+            using value_type = std::remove_cvref_t<reference>;
+            using iterator_category = std::conditional_t<std::is_lvalue_reference_v<reference>,
+                std::random_access_iterator_tag, std::input_iterator_tag>;
+            struct arrow_proxy {
+                value_type row;
+                constexpr const value_type* operator->() const { return std::addressof(row); }
+            };
+            using pointer = std::conditional_t<std::is_lvalue_reference_v<reference>,
+                std::add_pointer_t<std::remove_reference_t<reference>>, arrow_proxy>;
+
+            constexpr indexed_iterator() = default;
+            constexpr indexed_iterator(Parent* parent, difference_type index) : m_parent(parent), m_index(index) {}
+            template<typename Other> requires std::is_convertible_v<Other*, Parent*>
+            constexpr indexed_iterator(const indexed_iterator<Other, Access>& other)
+                : m_parent(other.m_parent), m_index(other.m_index) {}
+
+            constexpr reference operator*() const { return Access::get(*m_parent, static_cast<size_t>(m_index)); }
+            constexpr pointer operator->() const {
+                if constexpr (std::is_lvalue_reference_v<reference>) return std::addressof(**this);
+                else return {**this};
+            }
+            constexpr reference operator[](difference_type offset) const { return *(*this + offset); }
+            constexpr indexed_iterator& operator++() { ++m_index; return *this; }
+            constexpr indexed_iterator operator++(int) { auto old = *this; ++*this; return old; }
+            constexpr indexed_iterator& operator--() { --m_index; return *this; }
+            constexpr indexed_iterator operator--(int) { auto old = *this; --*this; return old; }
+            constexpr indexed_iterator& operator+=(difference_type offset) { m_index += offset; return *this; }
+            constexpr indexed_iterator& operator-=(difference_type offset) { m_index -= offset; return *this; }
+            friend constexpr indexed_iterator operator+(indexed_iterator it, difference_type n) { return it += n; }
+            friend constexpr indexed_iterator operator+(difference_type n, indexed_iterator it) { return it += n; }
+            friend constexpr indexed_iterator operator-(indexed_iterator it, difference_type n) { return it -= n; }
+            friend constexpr difference_type operator-(indexed_iterator a, indexed_iterator b) { return a.m_index - b.m_index; }
+            friend constexpr bool operator==(const indexed_iterator&, const indexed_iterator&) = default;
+            friend constexpr auto operator<=>(const indexed_iterator&, const indexed_iterator&) = default;
+        };
+    }
+
     // ================================== soa ==================================
     // 所有列を隠し、行数と列長を一体で管理する ID なしのコンテナ。
     // 列ビューの要素は更新できるが、ビューから所有列の長さは変更できない。
@@ -1277,45 +1332,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         using element_types = typename storage_type::element_types;
 
         template<bool Const>
-        class basic_iterator {
-            template<bool> friend class basic_iterator;
-            parent_type<Const>* m_parent = nullptr;
-            ptrdiff_t m_index = 0;
-
-        public:
-            using iterator_concept = std::random_access_iterator_tag;
-            using iterator_category = std::input_iterator_tag;
-            using difference_type = ptrdiff_t;
-            using reference = decltype(std::declval<parent_type<Const>&>()[size_t{}]);
-            using value_type = reference;
-            struct pointer {
-                reference row;
-                const reference* operator->() const { return std::addressof(row); }
-            };
-
-            basic_iterator() = default;
-            basic_iterator(parent_type<Const>* parent, difference_type index)
-                : m_parent(parent), m_index(index) {}
-            template<bool Other> requires (Const && !Other)
-            basic_iterator(const basic_iterator<Other>& other)
-                : m_parent(other.m_parent), m_index(other.m_index) {}
-
-            reference operator*() const { return (*m_parent)[static_cast<size_t>(m_index)]; }
-            pointer operator->() const { return {**this}; }
-            reference operator[](difference_type offset) const { return *(*this + offset); }
-            basic_iterator& operator++() { ++m_index; return *this; }
-            basic_iterator operator++(int) { auto old = *this; ++*this; return old; }
-            basic_iterator& operator--() { --m_index; return *this; }
-            basic_iterator operator--(int) { auto old = *this; --*this; return old; }
-            basic_iterator& operator+=(difference_type offset) { m_index += offset; return *this; }
-            basic_iterator& operator-=(difference_type offset) { m_index -= offset; return *this; }
-            friend basic_iterator operator+(basic_iterator it, difference_type n) { return it += n; }
-            friend basic_iterator operator+(difference_type n, basic_iterator it) { return it += n; }
-            friend basic_iterator operator-(basic_iterator it, difference_type n) { return it -= n; }
-            friend difference_type operator-(basic_iterator a, basic_iterator b) { return a.m_index - b.m_index; }
-            friend bool operator==(const basic_iterator&, const basic_iterator&) = default;
-            friend auto operator<=>(const basic_iterator&, const basic_iterator&) = default;
-        };
+        using basic_iterator = _detail::indexed_iterator<parent_type<Const>>;
 
         size_t size() const { return m_storage.size(); }
         bool empty() const { return m_storage.empty(); }
@@ -1396,6 +1413,259 @@ namespace SAITEKIKUUKAN_NAMESPACE {
     template<typename Record, typename Layout = storage::dynamic_layout<>>
     using record_soa = basic_soa<Layout, record<Record>>;
 #endif
+
+    // ================================ chunked ================================
+    // 固定長 SoA をブロックとして保持する。ポインタ表の拡張で既存のチャンクは移動しない。
+    template<size_t ChunkSize, typename... Types>
+    class chunked_soa {
+        static_assert(ChunkSize > 0 && ChunkSize <= static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max()),
+            "ChunkSize must be positive and fit ptrdiff_t");
+        using schema_type = _detail::schema<Types...>;
+
+    public:
+        static constexpr size_t chunk_size = ChunkSize;
+        using chunk_type = fixed_soa<ChunkSize, Types...>;
+        using value_type = typename chunk_type::value_type;
+        using element_types = typename chunk_type::element_types;
+
+    private:
+        using data_tuple = typename element_types::template apply<std::tuple>;
+        std::vector<std::unique_ptr<chunk_type>> m_chunks;
+        size_t m_size = 0;
+
+        static constexpr size_t required_chunks(size_t count) noexcept {
+            return count / ChunkSize + (count % ChunkSize != 0);
+        }
+        void append_chunk() {
+            if (size() == max_size()) throw std::length_error("Chunked SoA exceeds max_size");
+            m_chunks.push_back(std::make_unique<chunk_type>());
+        }
+        void insert(data_tuple& values) {
+            if (size() == capacity()) [[unlikely]] append_chunk();
+            std::apply([&](auto&&... fields) {
+                m_chunks[m_size / ChunkSize]->push_back(std::forward<decltype(fields)>(fields)...);
+            }, std::move(values));
+            ++m_size;
+        }
+        void truncate(size_t count) noexcept {
+            auto remaining = required_chunks(count);
+            for (size_t i = remaining; i < chunk_count(); ++i) m_chunks[i]->clear();
+            if (remaining) {
+                auto& tail = *m_chunks[remaining - 1];
+                auto tail_size = count - (remaining - 1) * ChunkSize;
+                while (tail.size() > tail_size) tail.pop_back();
+            }
+            m_size = count;
+        }
+        template<size_t Column> decltype(auto) column_at(size_t index) {
+            return m_chunks[index / ChunkSize]->template column<Column>()[index % ChunkSize];
+        }
+        template<size_t Column> decltype(auto) column_at(size_t index) const {
+            return std::as_const(*m_chunks[index / ChunkSize]).template column<Column>()[index % ChunkSize];
+        }
+        template<size_t Column>
+        struct column_access {
+            template<typename Parent>
+            static decltype(auto) get(Parent& parent, size_t index) { return parent.template column_at<Column>(index); }
+        };
+        struct chunk_access {
+            template<typename Parent>
+            static auto get(Parent& parent, size_t index) { return parent.chunk(index); }
+        };
+
+    public:
+        // 要素の更新だけを許可し、個別チャンクの resize による行数の不一致を防ぐ。
+        template<bool Const>
+        class basic_chunk_view {
+            friend class chunked_soa;
+            using parent_type = std::conditional_t<Const, const chunk_type, chunk_type>;
+            parent_type* m_chunk;
+            explicit basic_chunk_view(parent_type* chunk) : m_chunk(chunk) {}
+        public:
+            size_t size() const { return m_chunk->size(); }
+            bool empty() const { return m_chunk->empty(); }
+            static constexpr size_t capacity() { return ChunkSize; }
+            auto columns() const { return m_chunk->columns(); }
+            template<size_t Column> auto column() const { return m_chunk->template column<Column>(); }
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+            template<std::meta::info Member> auto column() const { return m_chunk->template column<Member>(); }
+#endif
+            template<size_t N> auto get() const { return column<N>(); }
+            auto operator[](size_t index) const { return (*m_chunk)[index]; }
+            auto at(size_t index) const { return m_chunk->at(index); }
+            value_type read(size_t index) const requires std::is_copy_constructible_v<value_type> {
+                return m_chunk->read(index);
+            }
+            void write(size_t index, value_type value) const requires (!Const) {
+                m_chunk->write(index, std::move(value));
+            }
+            auto begin() const { return m_chunk->begin(); }
+            auto end() const { return m_chunk->end(); }
+        };
+        using chunk_view = basic_chunk_view<false>;
+        using const_chunk_view = basic_chunk_view<true>;
+
+        chunked_soa() = default;
+        chunked_soa(const chunked_soa& other) requires std::is_copy_constructible_v<chunk_type>
+            : m_size(other.m_size) {
+            m_chunks.reserve(other.m_chunks.size());
+            for (const auto& chunk : other.m_chunks)
+                m_chunks.push_back(std::make_unique<chunk_type>(std::as_const(*chunk)));
+        }
+        chunked_soa(const chunked_soa&) requires (!std::is_copy_constructible_v<chunk_type>) = delete;
+        chunked_soa(chunked_soa&& other) noexcept
+            : m_chunks(std::move(other.m_chunks)), m_size(std::exchange(other.m_size, 0)) { other.m_chunks.clear(); }
+        chunked_soa& operator=(const chunked_soa& other) requires std::is_copy_constructible_v<chunk_type> {
+            if (this != std::addressof(other)) { chunked_soa copy(other); swap(copy); }
+            return *this;
+        }
+        chunked_soa& operator=(const chunked_soa&) requires (!std::is_copy_constructible_v<chunk_type>) = delete;
+        chunked_soa& operator=(chunked_soa&& other) noexcept {
+            if (this != std::addressof(other)) {
+                m_chunks = std::move(other.m_chunks);
+                m_size = std::exchange(other.m_size, 0);
+                other.m_chunks.clear();
+            }
+            return *this;
+        }
+        void swap(chunked_soa& other) noexcept { m_chunks.swap(other.m_chunks); std::swap(m_size, other.m_size); }
+        friend void swap(chunked_soa& left, chunked_soa& right) noexcept { left.swap(right); }
+
+        size_t size() const noexcept { return m_size; }
+        bool empty() const noexcept { return size() == 0; }
+        size_t chunk_count() const noexcept { return required_chunks(size()); }
+        size_t max_size() const noexcept {
+            auto limit = static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max());
+            return m_chunks.max_size() < required_chunks(limit) ? m_chunks.max_size() * ChunkSize : limit;
+        }
+        size_t capacity() const noexcept {
+            auto limit = max_size();
+            return m_chunks.size() > limit / ChunkSize ? limit : m_chunks.size() * ChunkSize;
+        }
+        void reserve(size_t count) {
+            if (count > max_size()) throw std::length_error("Chunked SoA capacity exceeds max_size");
+            auto desired = required_chunks(count);
+            m_chunks.reserve(desired);
+            while (m_chunks.size() < desired) m_chunks.push_back(std::make_unique<chunk_type>());
+        }
+        void resize(size_t count) requires std::default_initializable<value_type> {
+            if (count <= size()) { truncate(count); return; }
+            reserve(count);
+            auto old_size = size();
+            try {
+                while (size() < count) {
+                    auto index = size() / ChunkSize;
+                    auto& chunk = *m_chunks[index];
+                    auto previous = chunk.size();
+                    auto desired = std::min(ChunkSize, count - index * ChunkSize);
+                    chunk.resize(desired);
+                    m_size += desired - previous;
+                }
+            } catch (...) { truncate(old_size); throw; }
+        }
+        void clear() noexcept { truncate(0); }
+        void pop_back() noexcept {
+            if (empty()) return;
+            m_chunks[(m_size - 1) / ChunkSize]->pop_back();
+            --m_size;
+        }
+        void shrink_to_fit() {
+            while (m_chunks.size() > chunk_count()) m_chunks.pop_back();
+            m_chunks.shrink_to_fit();
+        }
+        void push_back(value_type value) {
+            schema_type::apply_value(std::move(value), [&](auto&&... fields) {
+                push_back(std::forward<decltype(fields)>(fields)...);
+            });
+        }
+        template<typename... Args> requires (sizeof...(Args) == element_types::size &&
+            !(sizeof...(Args) == 1 && (std::same_as<std::remove_cvref_t<Args>, value_type> && ...)))
+        void push_back(Args&&... args) {
+            data_tuple values(std::forward<Args>(args)...);
+            insert(values);
+        }
+        auto operator[](size_t index) { return (*m_chunks[index / ChunkSize])[index % ChunkSize]; }
+        auto operator[](size_t index) const { return std::as_const(*m_chunks[index / ChunkSize])[index % ChunkSize]; }
+        auto at(size_t index) {
+            if (index >= size()) throw std::out_of_range("Chunked SoA row index");
+            return (*this)[index];
+        }
+        auto at(size_t index) const {
+            if (index >= size()) throw std::out_of_range("Chunked SoA row index");
+            return (*this)[index];
+        }
+        value_type read(size_t index) const requires std::is_copy_constructible_v<value_type> {
+            if (index >= size()) throw std::out_of_range("Chunked SoA row index");
+            return std::as_const(*m_chunks[index / ChunkSize]).read(index % ChunkSize);
+        }
+        void write(size_t index, value_type value) {
+            if (index >= size()) throw std::out_of_range("Chunked SoA row index");
+            m_chunks[index / ChunkSize]->write(index % ChunkSize, std::move(value));
+        }
+        void erase_unordered(size_t index) {
+            if (index >= size()) throw std::out_of_range("Chunked SoA row index");
+            auto last = size() - 1;
+            if (index != last) [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                (std::ranges::swap(column_at<Indices>(index), column_at<Indices>(last)), ...);
+            }(std::make_index_sequence<element_types::size>{});
+            pop_back();
+        }
+
+        chunk_view chunk(size_t index) & {
+            if (index >= chunk_count()) throw std::out_of_range("Chunk index");
+            return chunk_view(m_chunks[index].get());
+        }
+        const_chunk_view chunk(size_t index) const & {
+            if (index >= chunk_count()) throw std::out_of_range("Chunk index");
+            return const_chunk_view(m_chunks[index].get());
+        }
+        chunk_view chunk(size_t) && = delete;
+        const_chunk_view chunk(size_t) const && = delete;
+        auto chunks() & {
+            using it = _detail::indexed_iterator<chunked_soa, chunk_access>;
+            return std::ranges::subrange(it{this, 0}, it{this, static_cast<ptrdiff_t>(chunk_count())});
+        }
+        auto chunks() const & {
+            using it = _detail::indexed_iterator<const chunked_soa, chunk_access>;
+            return std::ranges::subrange(it{this, 0}, it{this, static_cast<ptrdiff_t>(chunk_count())});
+        }
+        auto chunks() && = delete;
+        auto chunks() const && = delete;
+        template<size_t Column> auto column() & {
+            using it = _detail::indexed_iterator<chunked_soa, column_access<Column>>;
+            return std::ranges::subrange(it{this, 0}, it{this, static_cast<ptrdiff_t>(size())});
+        }
+        template<size_t Column> auto column() const & {
+            using it = _detail::indexed_iterator<const chunked_soa, column_access<Column>>;
+            return std::ranges::subrange(it{this, 0}, it{this, static_cast<ptrdiff_t>(size())});
+        }
+        template<size_t Column> auto column() && = delete;
+        template<size_t Column> auto column() const && = delete;
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+        template<std::meta::info Member> auto column() & { return column<schema_type::template member_index<Member>()>(); }
+        template<std::meta::info Member> auto column() const & { return column<schema_type::template member_index<Member>()>(); }
+        template<std::meta::info Member> auto column() && = delete;
+        template<std::meta::info Member> auto column() const && = delete;
+#endif
+        template<size_t N> auto get() & { return column<N>(); }
+        template<size_t N> auto get() const & { return column<N>(); }
+        template<size_t N> auto get() && = delete;
+        template<size_t N> auto get() const && = delete;
+        using iterator = _detail::indexed_iterator<chunked_soa>;
+        using const_iterator = _detail::indexed_iterator<const chunked_soa>;
+        iterator begin() { return {this, 0}; }
+        iterator end() { return {this, static_cast<ptrdiff_t>(size())}; }
+        const_iterator begin() const { return {this, 0}; }
+        const_iterator end() const { return {this, static_cast<ptrdiff_t>(size())}; }
+        const_iterator cbegin() const { return begin(); }
+        const_iterator cend() const { return end(); }
+    };
+
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+    template<typename Record, size_t ChunkSize = 128>
+    using record_chunked_soa = chunked_soa<ChunkSize, record<Record>>;
+#endif
+
 
     // ================================= buffer ================================
     // ID・イベント・有効行数を管理する共通の buffer
@@ -1699,16 +1969,6 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 #endif
 
 
-    // チャンク型バッファの構想（未実装）
-    /*
-    template<generator::is_generator G, eventsystem::is_eventsystem E, size_t ChunkSize = 16, typename ...Types>
-    struct chunked_buffer {
-        static constexpr size_t chunk_size = ChunkSize;
-        using id_type = typename G::generate_type;
-
-        std::tuple<std::vector<buffer<G, E, storage::static_storage, ChunkSize, Types>>...> chunks;
-    };
-     */
     // ================================== rows =================================
     // 列ストレージ単体の行ビュー
 #if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
