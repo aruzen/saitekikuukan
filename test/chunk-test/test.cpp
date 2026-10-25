@@ -16,12 +16,12 @@ void check_chunks() {
     static_assert(!temporary_columns<decltype(values)>);
     check(values.empty() && values.chunk_count() == 0 && values.chunks().empty());
     values.pop_back();
-    values.push_back(1, std::string("first"));
+    values.push_back(1, std::string("first")).value();
     int* first = &values.template column<0>()[0];
     auto first_chunk = values.chunk(0);
     values.reserve(Size * 4 + 1);
     check(values.size() == 1 && values.chunk_count() == 1 && values.capacity() >= Size * 4 + 1);
-    for (std::size_t i = 1; i < Size * 3 + 1; ++i) values.push_back(static_cast<int>(i + 1), std::to_string(i));
+    for (std::size_t i = 1; i < Size * 3 + 1; ++i) values.push_back(static_cast<int>(i + 1), std::to_string(i)).value();
     check(first == &values.template column<0>()[0] && std::get<0>(first_chunk[0]) == 1);
     check(values.chunk_count() == 4 && values.chunk(3).size() == 1);
     std::size_t visited = 0;
@@ -59,13 +59,13 @@ void check_chunks() {
     check(values.template column<0>()[0] != -1);
     auto moved = std::move(copy);
     check(copy.empty() && copy.capacity() == 0 && moved.template column<0>()[0] == -1);
-    copy.push_back(7, "reused");
+    copy.push_back(7, "reused").value();
     check(copy.size() == 1);
     moved = values;
     moved = std::move(copy);
     check(moved.read(0) == std::tuple{7, std::string("reused")} && copy.empty());
-    values.resize(Size + 1);
-    values.resize(Size * 3 + 2);
+    values.resize(Size + 1).value();
+    values.resize(Size * 3 + 2).value();
     check(values.read(values.size() - 1) == std::tuple{0, std::string{}});
     values.shrink_to_fit();
     check(values.capacity() == values.chunk_count() * Size && &values.template column<0>()[0] == first);
@@ -92,15 +92,15 @@ struct fragile {
 void check_failures() {
     kk::chunked_soa<2, int, fragile> values;
     fragile item;
-    values.push_back(1, item);
-    values.push_back(2, item);
+    values.push_back(1, item).value();
+    values.push_back(2, item).value();
     fragile::fail_default = true;
-    try { values.push_back(3, item); std::abort(); } catch (const std::runtime_error&) {}
+    try { values.push_back(3, item).value(); std::abort(); } catch (const std::runtime_error&) {}
     fragile::fail_default = false;
     check(values.size() == 2 && values.chunk_count() == 1 && values.column<0>()[1] == 2);
-    values.push_back(3, item);
+    values.push_back(3, item).value();
     kk::chunked_soa<2, int, fragile> target;
-    target.push_back(99, item);
+    target.push_back(99, item).value();
     fragile::fail_copy = true;
     try { target = values; std::abort(); } catch (const std::runtime_error&) {}
     fragile::fail_copy = false;
@@ -108,15 +108,15 @@ void check_failures() {
 
     kk::chunked_soa<2, std::string, std::string> aliased;
     std::string a(256, 'a'), b(256, 'b');
-    aliased.push_back(a, b);
-    aliased.push_back(a, b);
-    aliased.push_back(aliased.column<1>()[0], aliased.column<0>()[0]);
+    aliased.push_back(a, b).value();
+    aliased.push_back(a, b).value();
+    aliased.push_back(aliased.column<1>()[0], aliased.column<0>()[0]).value();
     check(aliased.read(2) == std::tuple{b, a});
 
     using pointers = kk::chunked_soa<2, std::unique_ptr<int>>;
     static_assert(!std::is_copy_constructible_v<pointers> && std::is_nothrow_move_constructible_v<pointers>);
     pointers movable;
-    for (int i = 0; i < 5; ++i) movable.push_back(std::make_unique<int>(i));
+    for (int i = 0; i < 5; ++i) movable.push_back(std::make_unique<int>(i)).value();
     movable.erase_unordered(1);
     check(movable.size() == 4 && *movable.column<0>()[1] == 4);
 }
@@ -145,7 +145,7 @@ struct sequenced {
 };
 void check_records() {
     kk::record_chunked_soa<particle, 3> values;
-    values.resize(8);
+    values.resize(8).value();
     for (auto row : values) check(row.x == 1 && row.y == 2 && row.name == "default");
     auto storage = values.chunk(0).columns();
     storage.x[0] = 10;
@@ -159,21 +159,21 @@ void check_records() {
     auto saved = values.read(4);
     values.write(0, saved);
     check(values[0].y == 20);
-    values.push_back(particle{3, 4, "last"});
+    values.push_back(particle{3, 4, "last"}).value();
     values.erase_unordered(0);
     check(values[0].name == "last" && values.size() == 8);
 
     kk::record_chunked_soa<sequenced, 2> ordered;
-    ordered.resize(1);
+    ordered.resize(1).value();
     sequenced::throw_at = 4;
-    try { ordered.resize(7); std::abort(); } catch (const std::runtime_error&) {}
+    try { ordered.resize(7).value(); std::abort(); } catch (const std::runtime_error&) {}
     check(ordered.size() == 1 && ordered.chunk_count() == 1 && ordered[0].number == 1);
     sequenced::throw_at = 0;
-    ordered.resize(3);
+    ordered.resize(3).value();
     check(ordered[1].number == 5 && ordered[2].number == 6);
 
     named_positions points;
-    points.resize(259);
+    points.resize(259).value();
     update_named_chunk_columns(points, 2, 3);
     for (auto row : points) check(row.x == 3 && row.y == 5 && row.name == "default");
 }
@@ -185,12 +185,12 @@ int main() {
     check_chunks<128>();
     check_failures();
     kk::chunked_soa<3> empty;
-    empty.resize(7);
-    empty.push_back();
+    empty.resize(7).value();
+    empty.push_back().value();
     empty.erase_unordered(0);
     check(empty.size() == 7 && empty.chunk_count() == 3 && empty.chunk(2).size() == 1);
     positions points;
-    points.resize(259);
+    points.resize(259).value();
     update_chunk_columns(points, 2, 3);
     for (auto [x, y] : points) check(x == 2 && y == 3);
 #if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L

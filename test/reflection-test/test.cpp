@@ -57,18 +57,18 @@ struct destroyed_item {
 
 void check_record_resize() {
     kk::record_soa<position> plain;
-    plain.resize(8);
+    plain.resize(8).value();
     for (auto row : plain)
         buffer_test::check(row.x == 0 && row.y == 0);
     plain[0].x = 7;
-    plain.resize(1);
-    plain.resize(4);
+    plain.resize(1).value();
+    plain.resize(4).value();
     buffer_test::check(plain[0].x == 7 && plain[1].x == 0);
 
     sequenced_item::sequence = 0;
     kk::record_soa<sequenced_item> sequenced;
-    sequenced.resize(3);
-    sequenced.resize(5);
+    sequenced.resize(3).value();
+    sequenced.resize(5).value();
     buffer_test::check(sequenced_item::sequence == 5);
     for (std::size_t i = 0; i < sequenced.size(); ++i)
         buffer_test::check(
@@ -76,7 +76,7 @@ void check_record_resize() {
 
     destroyed_item::destroyed = 0;
     kk::record_soa<destroyed_item> destroyed;
-    destroyed.resize(3);
+    destroyed.resize(3).value();
     buffer_test::check(destroyed_item::destroyed == 3);
 }
 
@@ -116,7 +116,7 @@ void check_integrated_buffer() {
     auto columns = values.columns();
     buffer_test::check(columns.x[0] == 1 && columns.y[1] == 4 && columns.name[1] == "second");
     auto& [x, y, name] = columns;
-    buffer_test::check(std::addressof(x) == std::addressof(values.template get<0>()));
+    buffer_test::check(x.data() == values.template get<0>().data());
     values.begin()->x = 5;
     values.begin()->name = "updated";
     buffer_test::check(x[0] == 5 && name[0] == "updated");

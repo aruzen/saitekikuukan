@@ -26,7 +26,7 @@ void update_values(Values& values, float dx, float dy) {
 }
 template<typename Values>
 void push_rows(Values& values, std::size_t count) {
-    for (std::size_t i = 0; i < count; ++i) values.push_back(static_cast<float>(i), static_cast<float>(i + 1));
+    for (std::size_t i = 0; i < count; ++i) (void)values.push_back(static_cast<float>(i), static_cast<float>(i + 1));
 }
 }
 
@@ -43,7 +43,7 @@ void vectors_columns(performance::vectors& values, float dx, float dy) {
     for (std::size_t i = 0; i < values.count; ++i) { values.x[i] += dx; values.y[i] += dy; }
 }
 #define DEFINE_SOA_KERNELS(name, type) \
-    void name##_resize(type& v, std::size_t n) { v.resize(n); } \
+    void name##_resize(type& v, std::size_t n) { (void)v.resize(n); } \
     void name##_push(type& v, std::size_t n) { push_rows(v, n); } \
     void name##_columns(type& v, float x, float y) { update_columns(v, x, y); } \
     void name##_rows(type& v, float x, float y) { update_rows(v, x, y); } \

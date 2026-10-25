@@ -48,9 +48,9 @@ void check_rows() {
     static_assert(
         std::same_as<decltype(std::as_const(values).template column<0>()), std::span<const int>>);
     values.reserve(4);
-    values.push_back(1, std::string("first"));
-    values.push_back(typename Values::value_type{2, "second"});
-    values.resize(3);
+    values.push_back(1, std::string("first")).value();
+    values.push_back(typename Values::value_type{2, "second"}).value();
+    values.resize(3).value();
     check(values.size() == 3 && values.capacity() >= 4);
     check(values.read(0) == std::tuple{1, std::string("first")});
     check(values.read(2) == std::tuple{0, std::string{}});
@@ -73,7 +73,7 @@ void check_rows() {
     check(values.template get<0>()[0] == 30);
     auto moved = std::move(copied);
     check(copied.empty() && copied.template get<0>().empty());
-    copied.push_back(42, "reused");
+    copied.push_back(42, "reused").value();
     check(copied.size() == 1 && moved.template get<0>()[0] == 99);
     try {
         (void)values.at(2);
@@ -87,10 +87,10 @@ void check_rows() {
 void check_aliasing() {
     kk::soa<std::string, std::string> values;
     const std::string a(256, 'a'), b(256, 'b');
-    values.push_back(a, b);
+    values.push_back(a, b).value();
     while (values.size() < values.capacity())
-        values.push_back(a, b);
-    values.push_back(values.template get<1>()[0], values.template get<0>()[0]);
+        values.push_back(a, b).value();
+    values.push_back(values.template get<1>()[0], values.template get<0>()[0]).value();
     check(values.read(values.size() - 1) == std::tuple{b, a});
     values.write(0, values.read(values.size() - 1));
     check(values.read(0) == std::tuple{b, a});
@@ -98,7 +98,7 @@ void check_aliasing() {
 
 void check_limits() {
     kk::fixed_soa<2, int> fixed;
-    fixed.resize(2);
+    fixed.resize(2).value();
     check(fixed.push_back(3).error() == kk::error_code::buffer_over);
     check(fixed.resize(3).error() == kk::error_code::buffer_over);
     check(fixed.size() == 2);
@@ -160,7 +160,7 @@ template<typename Layout>
 void check_records() {
     kk::record_soa<vertex, Layout> values;
     static_assert(std::ranges::random_access_range<decltype(values)>);
-    values.resize(3);
+    values.resize(3).value();
     check(values[0].normal[2] == 1 && values[1].name == "default");
     auto columns = values.columns();
     static_assert(std::same_as<decltype(columns.x), std::span<float>>);
@@ -178,7 +178,7 @@ void check_records() {
     row.name = "updated";
     values.write(0, row);
     check(values[0].y == 20 && values[0].name == "updated");
-    values.push_back(vertex{});
+    values.push_back(vertex{}).value();
     check(values[3].normal[2] == 1);
     values.erase_unordered(0);
     check(values[0].name == "default");
@@ -201,32 +201,32 @@ int main() {
     check_limits();
 
     kk::soa<> empty;
-    empty.resize(10);
-    empty.push_back();
+    empty.resize(10).value();
+    empty.push_back().value();
     check(empty.size() == 11 && empty.end() - empty.begin() == 11);
     empty.erase_unordered(0);
     check(empty.size() == 10);
     kk::fixed_soa<4> fixed_empty;
-    fixed_empty.resize(4);
+    fixed_empty.resize(4).value();
     check(fixed_empty.size() == 4 && fixed_empty.capacity() == 4);
 
     kk::soa<bool, int> bits;
-    bits.push_back(true, 7);
+    bits.push_back(true, 7).value();
     bits.column<0>()[0] = false;
     check(!std::get<0>(bits[0]) && std::get<1>(bits.read(0)) == 7);
     check(!std::as_const(bits).column<0>()[0]);
 
     static_assert(!std::is_copy_constructible_v<kk::soa<std::unique_ptr<int>>>);
     kk::soa<std::unique_ptr<int>> movable;
-    movable.push_back(std::make_unique<int>(42));
+    movable.push_back(std::make_unique<int>(42)).value();
     check(*movable.get<0>()[0] == 42);
 
     kk::basic_soa<deque_layout, int> custom;
-    custom.push_back(12);
-    custom.resize(4);
+    custom.push_back(12).value();
+    custom.resize(4).value();
     check(custom.size() == 4 && custom.column<0>()[0] == 12);
     kk::basic_soa<deque_layout, std::unique_ptr<int>> custom_movable;
-    custom_movable.push_back(std::make_unique<int>(23));
+    custom_movable.push_back(std::make_unique<int>(23)).value();
     auto custom_moved = std::move(custom_movable);
     check(custom_movable.empty() && *custom_moved.column<0>()[0] == 23);
 
@@ -234,18 +234,18 @@ int main() {
     check_records<kk::storage::dynamic_layout<>>();
     check_records<kk::storage::fixed_layout<8>>();
     kk::record_soa<empty_record> records;
-    records.resize(7);
+    records.resize(7).value();
     check(records.size() == 7 && records.end() - records.begin() == 7);
     kk::record_soa<metadata_names> named;
-    named.resize(1);
+    named.resize(1).value();
     check(named.begin()->id == 1 && named.columns().get[0] == 2);
     kk::record_soa<bit_record> record_bits;
-    record_bits.resize(2);
+    record_bits.resize(2).value();
     record_bits.columns().active[0] = false;
     check(!record_bits.begin()->active && record_bits[1].active);
     check(!std::as_const(record_bits).columns().active[0]);
     xy_values positions;
-    positions.resize(1024);
+    positions.resize(1024).value();
     update_soa_columns(positions, 1, 2);
     update_soa_rows(positions, 3, 4);
     update_soa_arrows(positions, 5, 6);

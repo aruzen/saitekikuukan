@@ -85,27 +85,27 @@ struct numbered {
 };
 
 // 確保の省略で失敗注入が変わらないよう、呼び出し境界を設ける。
-[[gnu::noinline]] void resize_for_failure(kk::soa<float, double>& values) { values.resize(64); }
+[[gnu::noinline]] void resize_for_failure(kk::soa<float, double>& values) { values.resize(64).value(); }
 
 void check_resize() {
     kk::soa<int, float, bool, int*> values;
-    values.resize(2);
+    values.resize(2).value();
     int target = 0;
     values.write(0, {42, 1.5f, true, &target});
-    values.resize(8);
+    values.resize(8).value();
     check(values.size() == 8 && values.read(0) == std::tuple{42, 1.5f, true, &target});
     for (std::size_t i = 1; i < values.size(); ++i)
         check(values.read(i) == std::tuple{0, 0.0f, false, static_cast<int*>(nullptr)});
-    values.resize(1);
-    values.resize(4);
+    values.resize(1).value();
+    values.resize(4).value();
     check(values.read(0) == std::tuple{42, 1.5f, true, &target});
     check(values.read(1) == std::tuple{0, 0.0f, false, static_cast<int*>(nullptr)});
     auto* data = values.column<0>().data();
-    values.resize(4);
+    values.resize(4).value();
     check(values.column<0>().data() == data);
 
     kk::soa<float, double> failed;
-    failed.push_back(3.0f, 4.0);
+    failed.push_back(3.0f, 4.0).value();
     allocations_until_failure = 1; // 最初の列の拡張後、次の列の確保で失敗する。
     try {
         resize_for_failure(failed);
@@ -115,19 +115,19 @@ void check_resize() {
     check(allocations_until_failure == -1);
     check(failed.size() == 1 && failed.column<0>().size() == 1 && failed.column<1>().size() == 1);
     check(failed.read(0) == std::tuple{3.0f, 4.0});
-    failed.resize(64);
+    failed.resize(64).value();
     check(failed.read(63) == std::tuple{0.0f, 0.0});
 
     numbered::sequence = 0;
     kk::soa<numbered> ordered;
-    ordered.resize(3);
-    ordered.resize(5);
+    ordered.resize(3).value();
+    ordered.resize(5).value();
     check(numbered::sequence == 5);
     for (std::size_t i = 0; i < ordered.size(); ++i)
         check(ordered.column<0>()[i].value == static_cast<int>(i + 1));
 
     kk::basic_soa<no_resize_layout, int> custom;
-    custom.resize(4);
+    custom.resize(4).value();
     check(custom.size() == 4 && custom.column<0>()[3] == 0);
 
     kk::buffer<kk::type_list<int, float>, kk::strategy::structure_of_array,
@@ -146,8 +146,8 @@ void check_append_limits() {
     // vector<bool> の実容量が論理上限を超えていても、上限で追加を止める。
     kk::basic_soa<kk::storage::dynamic_layout<2>, bool> bits;
     bits.reserve(2);
-    bits.push_back(true);
-    bits.push_back(false);
+    bits.push_back(true).value();
+    bits.push_back(false).value();
     check(bits.push_back(true).error() == kk::error_code::buffer_over);
     check(bits.size() == 2 && bits.column<0>()[0] && !bits.column<0>()[1]);
 
@@ -155,8 +155,8 @@ void check_append_limits() {
     check(zero.push_back(1).error() == kk::error_code::buffer_over);
     check(zero.empty());
     kk::basic_soa<kk::storage::dynamic_layout<2>> empty;
-    empty.push_back();
-    empty.push_back();
+    empty.push_back().value();
+    empty.push_back().value();
     check(empty.push_back().error() == kk::error_code::buffer_over);
     check(empty.size() == 2);
 }
