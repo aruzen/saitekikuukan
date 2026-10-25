@@ -15,7 +15,7 @@ int main() {
         kk::storage::fixed_layout<Size>, kk::identity::generated<generator::iota>,
         eventsystem::dummy>
         enemies_of_array{};
-    enemies_of_array.resize(Size);
+    enemies_of_array.resize(Size).value();
     auto [max_hp, hp, max_mp, mp, x, y] = enemies_of_array.columns();
     auto elem_x = enemies_of_array.get<4>();
     auto elem_y = enemies_of_array.get<5>();

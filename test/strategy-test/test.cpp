@@ -128,7 +128,7 @@ void check_index_rollback() {
     check(values.push_back(10).has_value());
     checked_id::copies_left = 0;
     try {
-        values.push_back(20);
+        values.push_back(20).value();
         std::abort();
     } catch (const std::runtime_error&) {
     }
@@ -138,7 +138,7 @@ void check_index_rollback() {
 
     checked_id::copies_left = 1;
     try {
-        values.resize(4);
+        values.resize(4).value();
         std::abort();
     } catch (const std::runtime_error&) {
     }

@@ -15,8 +15,8 @@ int main() {
         kk::storage::dynamic_layout<Size>, kk::identity::generated<generator::iota>,
         eventsystem::dummy>
         ds{};
-    ss.resize(Size);
-    ds.resize(Size);
+    ss.resize(Size).value();
+    ds.resize(Size).value();
 
     auto [sa, sb, sc, sd, sx, sy] = ss.columns();
     auto [da, db, dc, dd, dx, dy] = ds.columns();
