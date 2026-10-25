@@ -271,6 +271,7 @@ With `SAITEKIKUUKAN_BUILD_BENCHMARKS=ON`, CMake also builds `performance-benchma
 enabling reflection tests adds `performance-reflection-benchmark`.
 Kernels use separate translation units without LTO to keep the measured work from being folded away.
 CI runs sanitizer tests on Clang/C++23 and GCC 16/reflection, then uploads unsanitized performance reports.
+It runs automatically when a GitHub Release is published, including pre-releases, and can also be started manually from Actions.
 Shared-runner timings have no fixed pass/fail threshold; compare CSV and generated code under matching conditions.
 
 ## Future Features (Checklist)
