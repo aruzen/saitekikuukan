@@ -1,9 +1,8 @@
 name: Correctness and performance reports
 
 on:
-  pull_request:
-  push:
-    branches: [master]
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
