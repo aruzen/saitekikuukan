@@ -13,7 +13,8 @@ if(SAITEKIKUUKAN_BUILD_TESTS)
         insertion-events
         chunked-particles
         custom-columns
-        move-only)
+        move-only
+        strategy-selection)
         saitekikuukan_add_sample(${name} saitekikuukan::saitekikuukan)
     endforeach()
 endif()

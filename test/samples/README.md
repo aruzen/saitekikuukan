@@ -13,9 +13,10 @@
 | [chunked-particles.cpp](chunked-particles.cpp) | C++23 | 128行ずつのChunk、半端な末尾の走査、reserve後の参照、境界をまたぐ削除 |
 | [custom-columns.cpp](custom-columns.cpp) | C++23 | dequeを列にする独自layoutとrangesによる行の絞り込み |
 | [move-only.cpp](move-only.cpp) | C++23 | unique_ptrの列、コンテナのムーブ、所有権を保った行更新 |
+| [strategy-selection.cpp](strategy-selection.cpp) | C++23 | 同じ配置でIDなし・ハッシュ索引・線形検索を選択 |
 | [reflected-particles.cpp](reflected-particles.cpp) | C++26 | 構造体の初期値、storage.x、it->x、メンバ指定の列、read/write |
 | [reflected-chunks.cpp](reflected-chunks.cpp) | C++26 | Chunk内の名前付き列、境界をまたぐ名前付き行、追加後の参照 |
-| [reflected-buffer.cpp](reflected-buffer.cpp) | C++26 | record_bufferでのID検索と名前付きメンバへのアクセス |
+| [reflected-buffer.cpp](reflected-buffer.cpp) | C++26 | bufferでのID検索と名前付きメンバへのアクセス |
 | [raw-columns.cpp](raw-columns.cpp) | C++26 | 所有列の直接操作、全列への処理、最短の列長に合わせる行ビュー |
 
 リポジトリのルートから、C++23版をビルド・実行できます。
@@ -43,7 +44,7 @@ cmake --build build/samples-reflection --parallel 3
 ctest --test-dir build/samples-reflection -L sample --output-on-failure
 ```
 
-通常版7件は `SAITEKIKUUKAN_BUILD_TESTS`、reflection版4件は
+通常版8件は `SAITEKIKUUKAN_BUILD_TESTS`、reflection版4件は
 `SAITEKIKUUKAN_BUILD_REFLECTION_TESTS` に連動します。既存のテストも一緒に実行する場合は
 CTestの `-L sample` を外してください。
 

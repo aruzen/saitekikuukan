@@ -9,28 +9,38 @@ using buffer_test::check;
 
 // 標準 allocator のまま、複数列の途中で確保が失敗する経路を確認する。
 int allocations_until_failure = -1;
+
 [[gnu::noinline]] void* operator new(std::size_t size) {
     if (allocations_until_failure == 0) {
         allocations_until_failure = -1;
         throw std::bad_alloc{};
     }
-    if (allocations_until_failure > 0) --allocations_until_failure;
-    if (auto* memory = std::malloc(size ? size : 1)) return memory;
+    if (allocations_until_failure > 0)
+        --allocations_until_failure;
+    if (auto* memory = std::malloc(size ? size : 1))
+        return memory;
     throw std::bad_alloc{};
 }
+
 [[gnu::noinline]] void operator delete(void* memory) noexcept { std::free(memory); }
+
 [[gnu::noinline]] void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
 
 struct deque_layout {
     static constexpr bool resizable = true;
     static constexpr std::size_t max_size = 64;
-    template<typename T> using column = std::deque<T>;
+    template<typename T>
+    using column = std::deque<T>;
 };
 
 template<typename T>
-struct no_resize_column : std::vector<T> { void resize(std::size_t) = delete; };
+struct no_resize_column : std::vector<T> {
+    void resize(std::size_t) = delete;
+};
+
 struct no_resize_layout : deque_layout {
-    template<typename T> using column = no_resize_column<T>;
+    template<typename T>
+    using column = no_resize_column<T>;
 };
 
 template<typename T>
@@ -38,24 +48,33 @@ struct throwing_column : std::vector<T> {
     inline static bool fail_move = false;
     throwing_column() = default;
     throwing_column(const throwing_column&) = default;
+
     throwing_column(throwing_column&& other) : std::vector<T>(std::move(other)) {
-        if (fail_move) throw std::runtime_error("column move");
+        if (fail_move)
+            throw std::runtime_error("column move");
     }
+
     throwing_column& operator=(const throwing_column&) = default;
     throwing_column& operator=(throwing_column&&) = default;
 };
+
 struct throwing_layout : deque_layout {
-    template<typename T> using column = throwing_column<T>;
+    template<typename T>
+    using column = throwing_column<T>;
 };
 
 struct fragile {
     inline static bool fail = false;
     int value = 7;
     fragile() = default;
+
     fragile(const fragile& other) : value(other.value) {
-        if (fail) throw std::runtime_error("copy");
+        if (fail)
+            throw std::runtime_error("copy");
     }
+
     fragile(fragile&& other) noexcept(false) : value(other.value) {}
+
     fragile& operator=(const fragile&) = default;
     fragile& operator=(fragile&&) = default;
 };
@@ -88,7 +107,11 @@ void check_resize() {
     kk::soa<float, double> failed;
     failed.push_back(3.0f, 4.0);
     allocations_until_failure = 1; // 最初の列の拡張後、次の列の確保で失敗する。
-    try { resize_for_failure(failed); std::abort(); } catch (const std::bad_alloc&) {}
+    try {
+        resize_for_failure(failed);
+        std::abort();
+    } catch (const std::bad_alloc&) {
+    }
     check(allocations_until_failure == -1);
     check(failed.size() == 1 && failed.column<0>().size() == 1 && failed.column<1>().size() == 1);
     check(failed.read(0) == std::tuple{3.0f, 4.0});
@@ -107,12 +130,14 @@ void check_resize() {
     custom.resize(4);
     check(custom.size() == 4 && custom.column<0>()[3] == 0);
 
-    kk::buffer<kk::generator::iota, kk::eventsystem::dummy,
-        kk::storage::dynamic_storage, 16, int, float> ids;
+    kk::buffer<kk::type_list<int, float>, kk::strategy::structure_of_array,
+        kk::storage::dynamic_layout<16>, kk::identity::generated<kk::generator::iota>,
+        kk::eventsystem::dummy>
+        ids;
     check(ids.resize(3).has_value());
     check(ids.resize(8).has_value());
     for (std::size_t i = 0; i < ids.size(); ++i) {
-        check(ids.storage.ids[i] == i);
+        check((ids.begin() + i)->id() == i);
         check(ids.column<0>()[i] == 0 && ids.column<1>()[i] == 0);
     }
 }
@@ -123,16 +148,16 @@ void check_append_limits() {
     bits.reserve(2);
     bits.push_back(true);
     bits.push_back(false);
-    try { bits.push_back(true); std::abort(); } catch (const std::length_error&) {}
+    check(bits.push_back(true).error() == kk::error_code::buffer_over);
     check(bits.size() == 2 && bits.column<0>()[0] && !bits.column<0>()[1]);
 
     kk::basic_soa<kk::storage::dynamic_layout<0>, int> zero;
-    try { zero.push_back(1); std::abort(); } catch (const std::length_error&) {}
+    check(zero.push_back(1).error() == kk::error_code::buffer_over);
     check(zero.empty());
     kk::basic_soa<kk::storage::dynamic_layout<2>> empty;
     empty.push_back();
     empty.push_back();
-    try { empty.push_back(); std::abort(); } catch (const std::length_error&) {}
+    check(empty.push_back().error() == kk::error_code::buffer_over);
     check(empty.size() == 2);
 }
 
@@ -143,22 +168,36 @@ void check_failures() {
     kk::storage::basic_columns<kk::storage::dynamic_layout<>, int, fragile> target;
     target.push_back(99, fragile{});
     fragile::fail = true;
-    try { values.push_back(2, fragile{}); std::abort(); } catch (const std::runtime_error&) {}
-    check(values.size() == 1 && values.template get<0>().size() == 1 && values.template get<1>().size() == 1);
-    try { target = values; std::abort(); } catch (const std::runtime_error&) {}
+    try {
+        values.push_back(2, fragile{});
+        std::abort();
+    } catch (const std::runtime_error&) {
+    }
+    check(values.size() == 1 && values.template get<0>().size() == 1 &&
+          values.template get<1>().size() == 1);
+    try {
+        target = values;
+        std::abort();
+    } catch (const std::runtime_error&) {
+    }
     check(target.size() == 1 && target.get<0>()[0] == 99);
     fragile::fail = false;
     values.push_back(2, fragile{});
     check(values.size() == 2);
 
-    using buffer = kk::buffer<kk::generator::iota, kk::eventsystem::dummy,
-        kk::storage::dynamic_storage, 8, int, fragile>;
+    using buffer = kk::buffer<kk::type_list<int, fragile>, kk::strategy::structure_of_array,
+        kk::storage::dynamic_layout<8>, kk::identity::generated<kk::generator::iota>,
+        kk::eventsystem::dummy>;
     static_assert(!std::is_nothrow_copy_assignable_v<buffer>);
     buffer source, destination;
     check(source.push_back(1, fragile{}).has_value());
     check(destination.push_back(99, fragile{}).has_value());
     fragile::fail = true;
-    try { destination = source; std::abort(); } catch (const std::runtime_error&) {}
+    try {
+        destination = source;
+        std::abort();
+    } catch (const std::runtime_error&) {
+    }
     fragile::fail = false;
     check(destination.size() == 1 && destination.get<0>()[0] == 99);
 
@@ -166,8 +205,12 @@ void check_failures() {
     kk::storage::basic_columns<throwing_layout, pointer, pointer> moving;
     moving.push_back(std::make_unique<int>(1), std::make_unique<int>(2));
     throwing_column<pointer>::fail_move = true;
-    try { auto failed = std::move(moving); (void) failed; std::abort(); }
-    catch (const std::runtime_error&) {}
+    try {
+        auto failed = std::move(moving);
+        (void)failed;
+        std::abort();
+    } catch (const std::runtime_error&) {
+    }
     throwing_column<pointer>::fail_move = false;
     check(moving.empty() && moving.get<0>().empty() && moving.get<1>().empty());
     moving.push_back(std::make_unique<int>(3), std::make_unique<int>(4));
@@ -175,15 +218,22 @@ void check_failures() {
 
     kk::storage::basic_columns<kk::storage::fixed_layout<2>, int> fixed;
     fixed.resize(2);
-    try { fixed.push_back(3); std::abort(); } catch (const std::length_error&) {}
-    try { fixed.resize(3); std::abort(); } catch (const std::length_error&) {}
+    try {
+        fixed.push_back(3);
+        std::abort();
+    } catch (const std::length_error&) {
+    }
+    try {
+        fixed.resize(3);
+        std::abort();
+    } catch (const std::length_error&) {
+    }
     check(fixed.size() == 2);
 }
 
 int main() {
-    static_assert(kk::buffer<>::max_size == 1024);
-    static_assert(kk::buffer<kk::generator::iota, kk::eventsystem::dummy,
-        kk::storage::dynamic_storage>::max_size == kk::storage::DynamicSizeUnlimited);
+    static_assert(std::same_as<kk::buffer<kk::type_list<int>>, kk::soa<int>>);
+    static_assert(!kk::buffer<>::has_identity);
     check_failures();
     check_resize();
     check_append_limits();
@@ -191,13 +241,17 @@ int main() {
     const std::string a(256, 'a'), b(256, 'b');
     kk::storage::basic_columns<kk::storage::dynamic_layout<64>, std::string, std::string> values;
     values.push_back(a, b);
-    while (values.size() < values.capacity()) values.push_back(a, b);
+    while (values.size() < values.capacity())
+        values.push_back(a, b);
     values.push_back(values.get<1>()[0], values.get<0>()[0]);
     check(values.get<0>().back() == b && values.get<1>().back() == a);
-    kk::buffer<kk::generator::iota, kk::eventsystem::dummy, kk::storage::dynamic_storage,
-        64, std::string, std::string> ids;
+    kk::buffer<kk::type_list<std::string, std::string>, kk::strategy::structure_of_array,
+        kk::storage::dynamic_layout<64>, kk::identity::generated<kk::generator::iota>,
+        kk::eventsystem::dummy>
+        ids;
     check(ids.push_back(a, b).has_value());
-    while (ids.size() < ids.get<0>().capacity()) check(ids.push_back(a, b).has_value());
+    while (ids.size() < ids.capacity())
+        check(ids.push_back(a, b).has_value());
     check(ids.push_back(ids.get<1>()[0], ids.get<0>()[0]).has_value());
     check(ids.get<0>().back() == b && ids.get<1>().back() == a);
 

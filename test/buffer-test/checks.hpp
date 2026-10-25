@@ -26,13 +26,13 @@ namespace buffer_test {
         check(values.size() == 3 && values.end() - values.begin() == 3);
         check(values.begin()->id() == 0);
         check(values.index(0).value() == 0);
-        check(values[1].value().template get<2>() == "two");
+        check(values.find(1).value().template get<2>() == "two");
         values.template get<0>(0).value().get() = 100;
         check(values.begin()->template get<0>() == 100);
         values.begin()->template get<1>() = 200;
         check(values.template get<1>()[0] == 200);
         check(values.template get<0>(99).error() == kk::error_code::not_found_id);
-        check(values[99].error() == kk::error_code::not_found_id);
+        check(values.find(99).error() == kk::error_code::not_found_id);
 
         auto it = values.begin();
         check((it + 2)->id() == 2);
@@ -45,34 +45,35 @@ namespace buffer_test {
         const auto& constant = values;
         static_assert(std::is_same_v<decltype(constant.begin()->template get<0>()), const int&>);
         check(constant.template get<0>(0).value().get() == 100);
-        check(constant[0].value().template get<0>() == 100);
+        check(constant.find(0).value().template get<0>() == 100);
         check(constant.cbegin() == values.begin());
         check(std::ranges::distance(values | std::views::reverse) == 3);
 
         check(values.erase(1).has_value());
         check(values.size() == 2 && values.index(2).value() == 1);
-        check(values[2].value().template get<2>() == "three");
+        check(values.find(2).value().template get<2>() == "three");
         check(values.erase(1).error() == kk::error_code::not_found_id);
         check(values.erase(2).has_value());
         check(values.erase(0).has_value() && values.empty());
 
         check(values.resize(3).has_value());
         check(values.size() == 3);
-        check(values.storage.ids[0] != values.storage.ids[1]);
-        check(values.storage.ids[1] != values.storage.ids[2]);
+        check(values.begin()->id() != (values.begin() + 1)->id());
+        check((values.begin() + 1)->id() != (values.begin() + 2)->id());
         for (std::size_t i = 0; i < values.size(); ++i)
-            check(values.index(values.storage.ids[i]).value() == i);
+            check(values.index((values.begin() + i)->id()).value() == i);
         check(values.resize(5).error() == kk::error_code::buffer_over);
         check(values.size() == 3);
         check(values.resize(1).has_value());
         check(values.size() == 1 && values.end() - values.begin() == 1);
-        check(values.storage.swap(0, 1).error() == kk::error_code::buffer_over);
+        try { values.swap_rows(0, 1); std::abort(); } catch (const std::out_of_range&) {}
 
         values.clear();
         for (int i = 0; i < 4; ++i)
             check(values.push_back(i, i * 2, std::to_string(i)).has_value());
         check(values.push_back(4, 8, std::string("overflow")).error() == kk::error_code::buffer_over);
-        check(values.size() == 4 && values.storage.swap(0, 0).has_value());
+        values.swap_rows(0, 0);
+        check(values.size() == 4);
         Buffer another{};
         check(values.begin() != another.begin());
     }

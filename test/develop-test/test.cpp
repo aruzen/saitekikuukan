@@ -7,13 +7,19 @@ int main() {
     using namespace kk;
     constexpr size_t Size = 1024 * 10;
 
-    buffer<generator::iota, eventsystem::dummy, storage::static_storage, Size, int, int, int, int, int, int> ss{};
-    buffer<generator::iota, eventsystem::dummy, storage::dynamic_storage, Size, int, int, int, int, int, int> ds{};
+    kk::buffer<kk::type_list<int, int, int, int, int, int>, kk::strategy::structure_of_array,
+        kk::storage::fixed_layout<Size>, kk::identity::generated<generator::iota>,
+        eventsystem::dummy>
+        ss{};
+    kk::buffer<kk::type_list<int, int, int, int, int, int>, kk::strategy::structure_of_array,
+        kk::storage::dynamic_layout<Size>, kk::identity::generated<generator::iota>,
+        eventsystem::dummy>
+        ds{};
     ss.resize(Size);
     ds.resize(Size);
 
-    auto& [sa, sb, sc, sd, sx, sy] = ss.storage.entries;
-    auto& [da, db, dc, dd, dx, dy] = ds.storage.entries;
+    auto [sa, sb, sc, sd, sx, sy] = ss.columns();
+    auto [da, db, dc, dd, dx, dy] = ds.columns();
     auto [psx, psy] = std::make_tuple(sx.data(), sy.data());
     auto [pdx, pdy] = std::make_tuple(dx.data(), dy.data());
 
@@ -30,7 +36,8 @@ int main() {
                 }
             }
             auto end = std::chrono::high_resolution_clock::now();
-            std::println("{}µs", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+            std::println(
+                "{}µs", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
         }
 
         {
@@ -42,7 +49,8 @@ int main() {
                 }
             }
             auto end = std::chrono::high_resolution_clock::now();
-            std::println("{}µs", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+            std::println(
+                "{}µs", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
         }
     }
     std::println("{}, {}", ss.get<4>()[Size - 1], ss.get<5>()[Size - 1]);

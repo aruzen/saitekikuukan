@@ -40,22 +40,40 @@ CMake users can use `add_subdirectory` or install and call `find_package(saiteki
 Link `saitekikuukan::saitekikuukan` for C++23 or `saitekikuukan::reflection` for struct reflection.
 The library does not modify the parent project's standard or optimization flags.
 
-## Generic SoA without IDs
+## Buffer strategies
 
-`basic_soa<Layout, Types...>` owns columns and tracks the row count independently of IDs.
-The existing `buffer` adds IDs and events to the same column management.
+`buffer<Schema, Structure, Layout, Identity, Events>` is the common container entry point.
+Each argument selects an independent compile-time policy.
+
+| Argument | Default | Choices |
+| --- | --- | --- |
+| Schema | `type_list<>` | `type_list<Types...>` or a struct with C++26 reflection |
+| Structure | `strategy::structure_of_array` | Storage and row/column access strategy |
+| Layout | `storage::dynamic_layout<>` | `fixed_layout<N>`, `dynamic_layout<N>`, `chunked_layout<N>` |
+| Identity | `identity::none` | `identity::generated<Generator, Lookup>` |
+| Events | `eventsystem::dummy` | Registered listeners or a custom event system |
+
+`soa`, `fixed_soa`, `record_soa`, and `chunked_soa` are aliases for configured buffers.
+Identity is independent of data layout; both flat SoA and chunks support IDs.
+Without identity, the buffer stores no ID column, generator, or lookup index.
+
+`push_back` and `resize` return `expected<void, error_code>`, with `buffer_over` for capacity limits.
+Allocation and element exceptions propagate.
+
+## Column views and rows
 
 ```cpp
 // C++23
-kk::soa<float, float, std::string> values;
-values.push_back(1.0f, 2.0f, "first");
+kk::buffer<kk::type_list<float, float, std::string>,
+    kk::strategy::structure_of_array> values;
+values.push_back(1.0f, 2.0f, "first").value();
 auto [x, y, name] = values.columns();
 x[0] += 1.0f;
 for (auto [rx, ry, label] : values)
     ry += rx;
 
 kk::fixed_soa<1024, float, float> fixed;
-fixed.resize(10);
+fixed.resize(10).value();
 ```
 
 ```cpp
@@ -65,8 +83,8 @@ struct vertex {
     std::array<float, 3> normal{0, 0, 1};
     std::string name = "default";
 };
-kk::record_soa<vertex> vertices;
-vertices.resize(10);                  // Uses vertex{}, including member defaults
+kk::buffer<vertex> vertices;
+vertices.resize(10).value();                  // Uses vertex{}, including member defaults
 auto storage = vertices.columns();   // Aggregate of column views, returned by value
 storage.x[0] = 1.0f;
 vertices.begin()->x += 1.0f;
@@ -83,7 +101,7 @@ Column views cannot resize the owned columns. `operator[]` is unchecked; `at`, `
 Iterators provide random access to reference proxies; use `read` / `write` for owning row values.
 Empty schemas retain their row counts. Plain record SoA has no reserved member names.
 
-Layouts provide `column<T>`, `resizable`, and `max_size`. The predefined layouts use vectors or arrays;
+Flat layouts provide `column<T>`, `resizable`, and `max_size`. The predefined layouts use vectors or arrays;
 `dynamic_layout<N>` also supports a capacity limit. Custom random access columns need `size`, and resizable
 columns need `push_back`, `pop_back`, and `clear`. Optional `reserve`, `capacity`, and `max_size` are used when present.
 Fixed columns construct their entire capacity upfront. Resizable element types must be copy constructible
@@ -99,14 +117,14 @@ If a custom column's move constructor throws, the source may be cleared to keep 
 
 ## Chunked SoA (AoSoA)
 
-`chunked_soa<ChunkSize, Types...>` groups existing fixed-capacity SoA containers into independently
-owned blocks without IDs. Appending or reserving blocks preserves references to existing rows.
+`storage::chunked_layout<ChunkSize>` groups fixed-capacity SoA containers into independently
+owned blocks. `chunked_soa<ChunkSize, Types...>` is the alias without identity. Appending or reserving blocks preserves references to existing rows.
 Chunk sizes are positive compile-time constants; powers of two are optional.
 
 ```cpp
 // C++23
 kk::chunked_soa<128, float, float> points;
-points.resize(300); // Active block lengths: 128, 128, 44
+points.resize(300).value(); // Active block lengths: 128, 128, 44
 for (auto chunk : points.chunks()) {
     auto [x, y] = chunk.columns();
     for (std::size_t i = 0; i < chunk.size(); ++i) {
@@ -122,7 +140,7 @@ points.erase_unordered(0);
 // C++26 with the existing reflection schema
 struct particle { float x = 0, y = 0; std::string name = "default"; };
 kk::record_chunked_soa<particle, 128> particles;
-particles.resize(300);
+particles.resize(300).value();
 for (auto chunk : particles.chunks()) {
     auto storage = chunk.columns();
     for (std::size_t i = 0; i < chunk.size(); ++i)
@@ -146,50 +164,58 @@ Copyable columns support copying; move-only columns are also supported.
 Throwing element assignment/swapping may partially update values during `write` / `erase_unordered`.
 Views capture their row ranges; reacquire them after changing sizes.
 
-## Struct schemas for buffer (C++26)
-
-`record_buffer<T>` is an alias for the existing `buffer` with a `record<T>` schema.
-Reflection generates named columns and row references; the existing buffer manages sizes, IDs, insertion, erasure, and iteration.
+## Identity generation and lookup
 
 ```cpp
-#include "saitekikuukan.hpp"
-#include <string>
+struct particle { float x = 0, y = 0; std::string name; };
+using particles_type = kk::buffer<particle,
+    kk::strategy::structure_of_array,
+    kk::storage::dynamic_layout<1024>,
+    kk::identity::generated<>>;
 
-struct particle {
-    float x, y;
-    std::string name;
-};
-
-kk::record_buffer<particle> particles{};
-auto inserted = particles.push_back(particle{1.0f, 2.0f, "first"});
-auto& storage = particles.storage.entries;
-storage.x[0] += 1.0f;
-auto& [x, y, name] = storage;
-
-auto it = particles.begin();
-it->x += 1.0f;
-it->get<0>() += 1.0f;
-auto id = it->id();
-particles.get<0>(id).value().get() = 5.0f;
-for (auto row : particles)
-    row.y += 2.0f;
+particles_type particles;
+particles.push_back(particle{1, 2, "first"}).value();
+auto id = particles.begin()->id();
+particles.find(id).value().x = 5;
+particles[0].y = 10; // Always a physical row index
+particles.erase(id).value();
 ```
 
-Fixed column capacity is separate from the active row count, `particles.size()`.
-`begin()` / `end()` iterate over active rows only.
-Select dynamic columns with `record_buffer<particle, generator::iota, eventsystem::dummy, storage::dynamic_storage>`.
-The existing `buffer<Generator, Events, Storage, Size, Types...>` and tuple-based `storage.entries` remain supported.
-A struct without an explicit `record<T>` schema remains one column element type.
+`identity::generated<Generator, Lookup>` independently selects generation and lookup.
+Defaults are `generator::iota` and `strategy::hash_id_lookup`.
+A generator provides `generate_type` and `next()` returning `optional<generate_type>`.
 
-`push_back` accepts either a record or individual column values. Configure existing event registries through `events()`;
-both schemas share pre-insertion changes/cancellation and post-insertion notifications.
-For ordinary columns, ID-based `get<N>(id)` returns `expected<reference_wrapper<T>, error_code>`.
-In `record_buffer`, member names `id`, `get`, `parent`, and `index` are reserved for the row API.
-`columns()` / `column<N>()` also provide views over active rows. Legacy `get<N>()` and `storage.entries`
-remain available; callers must not change owning column lengths directly.
-Reacquire row references after operations that invalidate column references, such as reallocation.
+| Lookup | Behavior |
+| --- | --- |
+| `strategy::hash_id_lookup` | Additional hash index; average O(1) lookup and registration, updated after row moves |
+| `strategy::linear_id_lookup` | No lookup index; O(n) search/duplicate checks, O(n²) duplicate checks during bulk growth |
 
-### Generating column storage alone
+Hash lookup requires nonthrowing `std::hash<ID>` and equality. IDs require copy construction and
+nonthrowing move/swap. Fixed-capacity ID columns also require default construction.
+Both lookup policies reject duplicate IDs with `duplicate_id`.
+Generation failure returns `generate_id_failed`; failed/canceled operations may consume IDs.
+
+`find(id)` and `index(id)` return `expected`, with `not_found_id` for missing IDs.
+`get<N>(id)` returns `expected<reference_wrapper<T>, error_code>` for ordinary columns.
+`operator[]`, `at`, `read/write`, and `erase_unordered` always take physical row indices.
+`erase(id)` deletes by ID; moving the last row preserves its identity.
+Owning columns and ID tables are private. `columns()`, `column<N>()`, and `get<N>()` expose element views.
+`capacity()` reports data-column capacity; ID columns and lookup indexes allocate additional storage.
+Identified rows reserve the names `id`, `get`, `parent`, and `index` for the row API.
+
+## Insertion events
+
+Select the final `Events` argument and register listeners through `events()`.
+Both identity modes support pre-insertion modification/cancellation and post-insertion notification.
+
+- With identity: `will_insert_event<ID, Types...>` / `did_insert_event<ID, Types...>` carry IDs and field references.
+- Without identity: `will_insert_row_event<Types...>` / `did_insert_row_event<Types...>` carry the insertion index and field references.
+
+Events apply to `push_back`; cancellation returns `operation_canceled`.
+Resize, erase, and swap do not emit notifications. If a post-insertion callback throws, insertion has completed.
+Registries do not own listeners; listeners must remain alive while registered.
+
+## Generating column storage alone
 
 `saitekikuukan.hpp` also generates column aggregates with the original member names.
 Each member owns its array or vector directly and supports both named access and structured bindings.

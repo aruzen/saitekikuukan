@@ -3,8 +3,8 @@
 
 #include <string>
 
-using entities = kk::buffer<kk::generator::iota, kk::eventsystem::dummy,
-                            kk::storage::dynamic_storage, 3, int, std::string>;
+using entities = kk::buffer<kk::type_list<int, std::string>, kk::strategy::structure_of_array,
+    kk::storage::dynamic_layout<3>, kk::identity::generated<>>;
 
 int main() {
     entities values;
@@ -18,8 +18,8 @@ int main() {
     // 物理インデックスが変わっても、生存している行は同じ ID で検索する。
     sample::check(values.erase(enemy).has_value());
     sample::check(values.index(item).value() == 1);
-    sample::check(values[item].value().get<1>() == "item");
-    auto missing = values[enemy];
+    sample::check(values.find(item).value().get<1>() == "item");
+    auto missing = values.find(enemy);
     sample::check(!missing && missing.error() == kk::error_code::not_found_id);
 
     values.get<0>(player).value().get() -= 10;
@@ -31,6 +31,6 @@ int main() {
     auto overflow = values.push_back(1, "overflow");
     sample::check(!overflow && overflow.error() == kk::error_code::buffer_over);
     sample::check(values.size() == 3);
-    std::cout << "buffer: item ID=" << item
-              << ", current index=" << values.index(item).value() << '\n';
+    std::cout << "buffer: item ID=" << item << ", current index=" << values.index(item).value()
+              << '\n';
 }

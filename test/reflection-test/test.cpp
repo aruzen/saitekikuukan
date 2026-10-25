@@ -47,16 +47,19 @@ struct sequenced_item {
     int number = ++sequence;
     float value = 42;
 };
+
 struct destroyed_item {
     inline static int destroyed = 0;
     int value;
+
     ~destroyed_item() { ++destroyed; }
 };
 
 void check_record_resize() {
     kk::record_soa<position> plain;
     plain.resize(8);
-    for (auto row : plain) buffer_test::check(row.x == 0 && row.y == 0);
+    for (auto row : plain)
+        buffer_test::check(row.x == 0 && row.y == 0);
     plain[0].x = 7;
     plain.resize(1);
     plain.resize(4);
@@ -68,7 +71,8 @@ void check_record_resize() {
     sequenced.resize(5);
     buffer_test::check(sequenced_item::sequence == 5);
     for (std::size_t i = 0; i < sequenced.size(); ++i)
-        buffer_test::check(sequenced[i].number == static_cast<int>(i + 1) && sequenced[i].value == 42);
+        buffer_test::check(
+            sequenced[i].number == static_cast<int>(i + 1) && sequenced[i].value == 42);
 
     destroyed_item::destroyed = 0;
     kk::record_soa<destroyed_item> destroyed;
@@ -76,32 +80,40 @@ void check_record_resize() {
     buffer_test::check(destroyed_item::destroyed == 3);
 }
 
-template<template<typename, std::size_t, typename...> typename Storage>
+template<template<std::size_t> typename Layout>
 void check_integrated_buffer() {
-    kk::record_buffer<initialized_item, kk::generator::iota, kk::eventsystem::dummy, Storage, 4> initialized;
+    kk::buffer<initialized_item, kk::strategy::structure_of_array, Layout<4>,
+        kk::identity::generated<kk::generator::iota>, kk::eventsystem::dummy>
+        initialized;
     buffer_test::check(initialized.resize(2).has_value());
-    buffer_test::check(initialized.begin()->normal[2] == 1 && initialized.begin()->name == "default");
+    buffer_test::check(
+        initialized.begin()->normal[2] == 1 && initialized.begin()->name == "default");
     initialized.clear();
     buffer_test::check(initialized.resize(1).has_value());
     buffer_test::check(initialized.begin()->normal[2] == 1);
 
-    using values_type = kk::record_buffer<item, kk::generator::iota, kk::eventsystem::dummy, Storage, 4>;
+    using values_type = kk::buffer<item, kk::strategy::structure_of_array, Layout<4>,
+        kk::identity::generated<kk::generator::iota>, kk::eventsystem::dummy>;
     static_assert(std::is_same_v<values_type,
-        kk::buffer<kk::generator::iota, kk::eventsystem::dummy, Storage, 4, kk::record<item>>>);
+        kk::buffer<item, kk::strategy::structure_of_array, Layout<4>,
+            kk::identity::generated<kk::generator::iota>, kk::eventsystem::dummy>>);
     buffer_test::check_buffer<values_type>();
-    using events_type = kk::record_buffer<item, kk::generator::iota, buffer_test::insert_events, Storage, 2>;
+    using events_type = kk::buffer<item, kk::strategy::structure_of_array, Layout<2>,
+        kk::identity::generated<kk::generator::iota>, buffer_test::insert_events>;
     buffer_test::check_events<events_type>();
     using registry = kk::eventsystem::registration<buffer_test::before_insert>;
     using single = kk::eventsystem::one_event_each_only<buffer_test::before_insert>;
-    buffer_test::check_registered_events<kk::record_buffer<item, kk::generator::iota, registry, Storage, 4>>();
-    buffer_test::check_registered_events<kk::record_buffer<item, kk::generator::iota, single, Storage, 4>>();
+    buffer_test::check_registered_events<kk::buffer<item, kk::strategy::structure_of_array,
+        Layout<4>, kk::identity::generated<kk::generator::iota>, registry>>();
+    buffer_test::check_registered_events<kk::buffer<item, kk::strategy::structure_of_array,
+        Layout<4>, kk::identity::generated<kk::generator::iota>, single>>();
 
     values_type values{};
     item original{1, 2, "first"};
     buffer_test::check(values.push_back(original).has_value());
     buffer_test::check(original.name == "first");
     buffer_test::check(values.push_back(item{3, 4, "second"}).has_value());
-    auto& columns = values.storage.entries;
+    auto columns = values.columns();
     buffer_test::check(columns.x[0] == 1 && columns.y[1] == 4 && columns.name[1] == "second");
     auto& [x, y, name] = columns;
     buffer_test::check(std::addressof(x) == std::addressof(values.template get<0>()));
@@ -109,22 +121,26 @@ void check_integrated_buffer() {
     values.begin()->name = "updated";
     buffer_test::check(x[0] == 5 && name[0] == "updated");
     buffer_test::check(values.begin()->id() == 0);
-    buffer_test::check(values[0].value().x == 5);
+    buffer_test::check(values.find(0).value().x == 5);
     for (auto row : values)
         row.y += 10;
     buffer_test::check(y[0] == 12 && y[1] == 14 && values.size() == 2);
     const auto& constant = values;
     static_assert(std::is_same_v<decltype(constant.begin()->x), const int&>);
-    static_assert(std::is_same_v<decltype(constant[0].value().name), const std::string&>);
+    static_assert(std::is_same_v<decltype(constant.find(0).value().name), const std::string&>);
     buffer_test::check(constant.begin()->name == "updated");
     buffer_test::check(values.erase(0).has_value());
     buffer_test::check(values.begin()->id() == 1 && values.begin()->name == "second");
 
-    kk::record_buffer<movable_item, kk::generator::iota, kk::eventsystem::dummy, Storage, 4> movable{};
+    kk::buffer<movable_item, kk::strategy::structure_of_array, Layout<4>,
+        kk::identity::generated<kk::generator::iota>, kk::eventsystem::dummy>
+        movable{};
     buffer_test::check(movable.push_back(movable_item{std::make_unique<int>(42)}).has_value());
     buffer_test::check(*movable.begin()->value == 42);
 
-    kk::record_buffer<empty, kk::generator::iota, kk::eventsystem::dummy, Storage, 4> no_fields{};
+    kk::buffer<empty, kk::strategy::structure_of_array, Layout<4>,
+        kk::identity::generated<kk::generator::iota>, kk::eventsystem::dummy>
+        no_fields{};
     buffer_test::check(no_fields.push_back(empty{}).has_value());
     buffer_test::check(no_fields.push_back(empty{}).has_value());
     buffer_test::check(no_fields.end() - no_fields.begin() == 2);
@@ -165,11 +181,12 @@ extern "C" void update_rows(positions& storage, float dx, float dy) {
     }
 }
 
-using position_buffer = kk::record_buffer<position, kk::generator::iota,
-    kk::eventsystem::dummy, kk::storage::static_storage, 10240>;
+using position_buffer =
+    kk::buffer<position, kk::strategy::structure_of_array, kk::storage::fixed_layout<10240>,
+        kk::identity::generated<kk::generator::iota>, kk::eventsystem::dummy>;
 
 extern "C" void update_buffer_direct(position_buffer& values, float dx, float dy) {
-    auto& columns = values.storage.entries;
+    auto columns = values.columns();
     for (std::size_t i = 0; i < values.size(); ++i) {
         columns.x[i] += dx;
         columns.y[i] += dy;
@@ -185,8 +202,8 @@ extern "C" void update_buffer_iterator(position_buffer& values, float dx, float 
 
 int main() {
     check_record_resize();
-    check_integrated_buffer<kk::storage::static_storage>();
-    check_integrated_buffer<kk::storage::dynamic_storage>();
+    check_integrated_buffer<kk::storage::fixed_layout>();
+    check_integrated_buffer<kk::storage::dynamic_layout>();
     using static_columns = kk::storage::static_soa<particle, 4>;
     using dynamic_columns = kk::storage::dynamic_soa<particle>;
     static_assert(std::is_aggregate_v<static_columns>);
@@ -275,8 +292,8 @@ int main() {
     check(constant_rows.end() - rows.begin() == 4);
     check(converted->name == "row");
     check(kk::storage::rows(copy).begin() != rows.begin());
-    auto borrowed = std::ranges::find_if(kk::storage::rows(storage),
-        [](auto row) { return row.name == "row"; });
+    auto borrowed = std::ranges::find_if(
+        kk::storage::rows(storage), [](auto row) { return row.name == "row"; });
     check(borrowed == rows.begin());
     check(std::ranges::distance(rows | std::views::take(2)) == 2);
     auto reverse = rows | std::views::reverse;
@@ -336,9 +353,9 @@ int main() {
     update_buffer_direct(direct, 2.0f, 3.0f);
     update_buffer_iterator(iterated, 2.0f, 3.0f);
     for (std::size_t i = 0; i < direct.size(); ++i) {
-        check(direct.storage.entries.x[i] == iterated.storage.entries.x[i]);
-        check(direct.storage.entries.y[i] == iterated.storage.entries.y[i]);
+        check(direct.columns().x[i] == iterated.columns().x[i]);
+        check(direct.columns().y[i] == iterated.columns().y[i]);
     }
-    check(iterated.storage.entries.x[0] == 2.0f && iterated.storage.entries.y[0] == 3.0f);
-    check(iterated.storage.entries.x[128] == 0.0f && iterated.storage.entries.y[128] == 0.0f);
+    check(iterated.columns().x[0] == 2.0f && iterated.columns().y[0] == 3.0f);
+    check(iterated.columns().x[128] == 0.0f && iterated.columns().y[128] == 0.0f);
 }

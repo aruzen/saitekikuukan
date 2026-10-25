@@ -40,15 +40,33 @@
 通常は `saitekikuukan::saitekikuukan`、構造体を自動展開する場合は `saitekikuukan::reflection` をリンクします。
 親プロジェクトの C++ バージョンや最適化フラグは変更しません。
 
-## ID なしの汎用 SoA
+## buffer と方針の組み合わせ
 
-`basic_soa<Layout, Types...>` が列の所有と行数を管理します。ID・イベント付きの既存 `buffer` も同じ列管理を使います。
-スキーマの指定と列コンテナの選択は独立しており、Mesh などの用途固有の型は必要ありません。
+`buffer<Schema, Structure, Layout, Identity, Events>` を共通の入口にします。
+スキーマ・データ配置・格納方式・ID管理・イベントを、それぞれ型で選択します。
+
+| 引数 | 既定値 | 選択肢 |
+| --- | --- | --- |
+| Schema | `type_list<>` | `type_list<Types...>`、構造体（C++26 reflection） |
+| Structure | `strategy::structure_of_array` | 列の所有と行・列アクセスを提供する配置方針 |
+| Layout | `storage::dynamic_layout<>` | `fixed_layout<N>`、`dynamic_layout<N>`、`chunked_layout<N>` |
+| Identity | `identity::none` | `identity::generated<Generator, Lookup>` |
+| Events | `eventsystem::dummy` | 登録型リスナ、独自イベントシステムなど |
+
+`soa`・`fixed_soa`・`record_soa`・`chunked_soa` は、設定済みの `buffer` を表す型エイリアスです。
+IDの有無はデータ配置と独立しており、SoAとChunkのどちらにもID管理を組み合わせられます。
+IDなしの場合は、ID列・ジェネレータ・検索索引を保持しません。
+
+追加とサイズ変更は `expected<void, error_code>` を返します。容量超過は `buffer_over` です。
+確保や要素の構築・代入が投げた例外は伝播します。
+
+## 列ビューと行アクセス
 
 ```cpp
 // C++23: 型パックと構造化束縛
-kk::soa<float, float, std::string> values;
-values.push_back(1.0f, 2.0f, "first");
+kk::buffer<kk::type_list<float, float, std::string>,
+    kk::strategy::structure_of_array> values;
+values.push_back(1.0f, 2.0f, "first").value();
 auto [x, y, name] = values.columns();
 x[0] += 1.0f;
 for (auto [rx, ry, label] : values)
@@ -56,7 +74,7 @@ for (auto [rx, ry, label] : values)
 
 // 固定容量でも操作は共通。有効行数は容量と別に管理する。
 kk::fixed_soa<1024, float, float> fixed;
-fixed.resize(10);
+fixed.resize(10).value();
 ```
 
 ```cpp
@@ -66,8 +84,8 @@ struct vertex {
     std::array<float, 3> normal{0, 0, 1};
     std::string name = "default";
 };
-kk::record_soa<vertex> vertices;
-vertices.resize(10);                 // vertex{} で初期化。normal[2] は 1
+kk::buffer<vertex> vertices;
+vertices.resize(10).value();                 // vertex{} で初期化。normal[2] は 1
 auto storage = vertices.columns();   // 所有列へのビューを値で取得
 storage.x[0] = 1.0f;
 auto [vx, vy, normals, names] = storage;
@@ -88,7 +106,7 @@ const なコンテナでは `std::span<const T>` です。`std::vector<bool>` �
 行イテレータはランダムアクセスの参照プロキシで、行の値の読み書きには `read` / `write` を使います。
 `soa<>` や空の構造体でも行数を保持します。ID なしの構造体には `id` などの予約メンバ名はありません。
 
-`Layout` は `column<T>`・`resizable`・`max_size` を持つ型です。独自の列コンテナも同じ行管理に接続できます。
+固定長・可変長の `Layout` は `column<T>`・`resizable`・`max_size` を持つ型です。独自の列コンテナも同じ行管理に接続できます。
 列にはランダムアクセスと `size` が必要で、可変長列には `push_back`・`pop_back`・`clear` も必要です。
 `reserve` / `capacity` / `max_size` があれば利用します。固定長列は容量分の要素を最初に構築します。
 可変長列の要素にはコピー構築か例外を投げないムーブ構築が必要です。
@@ -103,14 +121,15 @@ const なコンテナでは `std::span<const T>` です。`std::vector<bool>` �
 
 ## チャンク単位の SoA（AoSoA）
 
-`chunked_soa<ChunkSize, Types...>` は、既存の `fixed_soa` を固定容量のブロックとして束ねる ID なしのコンテナです。
+`storage::chunked_layout<ChunkSize>` は、固定容量のSoAをブロックとして束ねます。
+`chunked_soa<ChunkSize, Types...>` は、そのIDなし設定のエイリアスです。
 各ブロックを個別に保持するため、追加や `reserve` で既存行を移動させません。
 `ChunkSize` は正のコンパイル時定数で、2の累乗以外も指定できます。
 
 ```cpp
 // C++23: 型パック
 kk::chunked_soa<128, float, float> points;
-points.resize(300); // 有効なチャンクは128行・128行・44行
+points.resize(300).value(); // 有効なチャンクは128行・128行・44行
 for (auto chunk : points.chunks()) {
     auto [x, y] = chunk.columns();
     for (std::size_t i = 0; i < chunk.size(); ++i) {
@@ -126,7 +145,7 @@ points.erase_unordered(0); // 全体の末尾行を移して削除
 // C++26: 既存と同じスキーマ生成を利用
 struct particle { float x = 0, y = 0; std::string name = "default"; };
 kk::record_chunked_soa<particle, 128> particles;
-particles.resize(300);
+particles.resize(300).value();
 for (auto chunk : particles.chunks()) {
     auto storage = chunk.columns();
     for (std::size_t i = 0; i < chunk.size(); ++i)
@@ -151,49 +170,58 @@ const なコンテナの列・行・チャンクは、いずれも const な要�
 要素の代入・交換が例外を投げる場合の `write` / `erase_unordered` は一部の値が変わることがあります。
 ビューの範囲は取得時点の行数なので、サイズの変更後は取り直してください。
 
-## 構造体を buffer のスキーマにする（C++26）
-
-`record_buffer<T>` は既存の `buffer` に `record<T>` スキーマを渡すエイリアスです。
-構造体から名前付きの列と行参照を生成し、要素数・ID・挿入・削除・イテレータを既存の経路で管理します。
+## ID管理と検索方式
 
 ```cpp
-#include "saitekikuukan.hpp"
-#include <string>
+struct particle { float x = 0, y = 0; std::string name; };
+using particles_type = kk::buffer<particle,
+    kk::strategy::structure_of_array,
+    kk::storage::dynamic_layout<1024>,
+    kk::identity::generated<>>;
 
-struct particle {
-    float x, y;
-    std::string name;
-};
-
-kk::record_buffer<particle> particles{};
-auto inserted = particles.push_back(particle{1.0f, 2.0f, "first"});
-auto& storage = particles.storage.entries;
-storage.x[0] += 1.0f;
-auto& [x, y, name] = storage;
-
-auto it = particles.begin();
-it->x += 1.0f;
-it->get<0>() += 1.0f;
-auto id = it->id();
-particles.get<0>(id).value().get() = 5.0f;
-for (auto row : particles)
-    row.y += 2.0f;
+particles_type particles;
+particles.push_back(particle{1, 2, "first"}).value();
+auto id = particles.begin()->id();
+particles.find(id).value().x = 5;
+particles[0].y = 10; // 添字は常に物理行インデックス
+particles.erase(id).value();
 ```
 
-固定長列の容量と、有効な行数 `particles.size()` は別です。`begin()` / `end()` は有効な行だけを走査します。
-可変長版は `record_buffer<particle, generator::iota, eventsystem::dummy, storage::dynamic_storage>` で選べます。
-従来の `buffer<Generator, Events, Storage, Size, Types...>` とタプルの `storage.entries` もそのまま使えます。
-`record<T>` を明示しない構造体は従来どおり一つの列の要素型として扱います。
+`identity::generated<Generator, Lookup>` はID生成と検索方式を別々に指定します。
+既定は `generator::iota` と `strategy::hash_id_lookup` です。
+生成器は `generate_type` と、`optional<generate_type>` を返す `next()` を持ちます。
 
-`push_back` は構造体と列ごとの引数の両方に対応します。`events()` から既存のイベント登録クラスを設定でき、
-挿入前の変更・キャンセルと挿入後の通知を両形式で共通に処理します。
-ID による `get<N>(id)` は、通常の列では `expected<reference_wrapper<T>, error_code>` を返します。
-`record_buffer` では `id`・`get`・`parent`・`index` が行 API 用の予約名です。
-`columns()` / `column<N>()` で有効行だけの列ビューも取得できます。
-互換性のために公開する `storage.entries` と従来の `get<N>()` では、所有列の長さを直接変更しないでください。
-列の再確保などで参照が無効になる操作の後は、取得済みの行参照を取り直してください。
+| 検索方式 | 特徴 |
+| --- | --- |
+| `strategy::hash_id_lookup` | ハッシュ索引を追加し、検索・ID登録は平均O(1)。削除や行交換でも索引を更新 |
+| `strategy::linear_id_lookup` | 索引を保持せずID列を走査。検索・重複確認はO(n)、まとめた拡張の重複確認はO(n²) |
 
-### 列ストレージだけを生成する
+ハッシュ方式には例外を投げない `std::hash<ID>` と等値比較が必要です。
+ID型にはコピー構築と、例外を投げないムーブ・交換が必要です。固定長ではID型もデフォルト構築可能である必要があります。
+両方式とも重複IDを `duplicate_id` として拒否します。
+生成失敗は `generate_id_failed` です。失敗やキャンセルでも生成器は進むため、IDには欠番が生じます。
+
+`find(id)` と `index(id)` は `expected` を返し、見つからない場合は `not_found_id` です。
+`get<N>(id)` は通常の列で `expected<reference_wrapper<T>, error_code>` を返します。
+`operator[]`・`at`・`read/write`・`erase_unordered` の引数は、IDの有無によらず物理行インデックスです。
+`erase(id)` はIDによる削除です。末尾行を移動しても、その行のIDを維持します。
+所有列とID表は非公開で、`columns()`・`column<N>()`・`get<N>()` は要素を更新できるビューです。
+`capacity()` はデータ列の容量を返し、ID列とハッシュ索引の確保は追加で発生します。
+ID付きの行では `id`・`get`・`parent`・`index` が行APIの予約名です。
+
+## イベント
+
+最後のテンプレート引数で `Events` を指定し、`events()` からリスナを登録・解除します。
+IDの有無にかかわらず、挿入前の値変更・キャンセルと挿入後の通知に対応します。
+
+- IDあり: `will_insert_event<ID, Types...>` / `did_insert_event<ID, Types...>`。IDと列の参照を通知します。
+- IDなし: `will_insert_row_event<Types...>` / `did_insert_row_event<Types...>`。挿入位置の `index` と列の参照を通知します。
+
+イベントは `push_back` に適用し、キャンセル時は `operation_canceled` を返します。
+`resize`・削除・交換による通知は行いません。挿入後の通知が投げた場合、挿入自体は完了しています。
+登録先はリスナを所有しないため、登録中のリスナを生存させてください。
+
+## 列ストレージだけを生成する
 
 `saitekikuukan.hpp` から、構造体の各メンバを同名の列配列に変換する API も使えます。
 配列そのものをメンバとして保持し、`storage.x` と構造化束縛の両方でアクセスできます。
