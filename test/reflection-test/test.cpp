@@ -357,5 +357,5 @@ int main() {
         check(direct.columns().y[i] == iterated.columns().y[i]);
     }
     check(iterated.columns().x[0] == 2.0f && iterated.columns().y[0] == 3.0f);
-    check(iterated.columns().x[128] == 0.0f && iterated.columns().y[128] == 0.0f);
+    check(iterated.columns().x.size() == 128 && iterated.columns().y.size() == 128);
 }
