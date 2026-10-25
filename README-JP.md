@@ -261,6 +261,12 @@ ctest --test-dir build/reflection --output-on-failure
 
 ---
 
+## 実行できるサンプル
+
+[test/samples](test/samples/README.md) に、用途別の使用例を用意しています。
+型パック・固定容量・IDとイベント・Chunk・独自列・move-only型と、構造体reflectionの例を
+個別にビルドでき、CTestで結果を確認できます。
+
 ## 性能の継続確認
 
 `tools/performance_report.py` は、動的 SoA と直接の vector を同じ入力で比較します。
