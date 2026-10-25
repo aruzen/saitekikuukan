@@ -78,8 +78,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                     return static_cast<bool>(Filter<T>::value);
                 } else {
                     static_assert(
-                            has_bool_value_type<Filter<T>>,
-                            "Invalid Filter<T> type: must provide either '::value', '::type' or same_as<std::true_type>");
+                        has_bool_value_type<Filter<T>>,
+                        "Invalid Filter<T> type: must provide either '::value', '::type' or same_as<std::true_type>");
                 }
                 return false;
             }
@@ -87,9 +87,11 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             template<template<typename...> typename Filter, typename N>
             auto _filter() { return N{}; }
 
-            template<template<typename...> typename Filter, typename N, typename T, typename ...Types>
+            template<template<typename...> typename Filter, typename N, typename T,
+                     typename ...Types>
             auto _filter() {
-                using next = std::conditional_t<_apply_filter<Filter, T>(), typename N::template add<T>, N>;
+                using next =
+                    std::conditional_t<_apply_filter<Filter, T>(), typename N::template add<T>, N>;
                 return _filter<Filter, next, Types...>();
             }
 
@@ -110,10 +112,12 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 return poped;
             }
 
-            template<template<typename...> typename Filter, size_t Current, size_t Size, std::array<size_t, Size> Arr>
+            template<template<typename...> typename Filter, size_t Current, size_t Size,
+                     std::array<size_t, Size> Arr>
             constexpr auto _filtered_index() { return Arr; }
 
-            template<template<typename...> typename Filter, size_t Current, size_t Size, std::array<size_t, Size> Arr, typename T, typename ...Types>
+            template<template<typename...> typename Filter, size_t Current, size_t Size,
+                     std::array<size_t, Size> Arr, typename T, typename ...Types>
             constexpr auto _filtered_index() {
                 if constexpr (_apply_filter<Filter, T>())
                     return _filtered_index<Filter, Current + 1, Size + 1,
@@ -206,6 +210,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             using wrap_array = type_list<std::array<Types, Size>...>;
         };
     }
+
     using _meta::type_list;
 
     // =============================== error_code ==============================
@@ -273,8 +278,10 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
         struct iota {
             using generate_type = size_t;
+
         private:
             size_t m_next_id = 0;
+
         public:
             inline std::optional<size_t> next() {
                 return m_next_id++;
@@ -333,6 +340,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             struct will_delete_event {
             private:
                 bool m_canceled = false;
+
             public:
                 will_delete_event(IDType &id, std::tuple<Types &...> data) : id(id), data(data) {};
 
@@ -360,8 +368,11 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             struct will_swap_event {
             private:
                 bool m_canceled = false;
+
             public:
-                will_swap_event(IDType &id, std::tuple<Types &...> first, std::tuple<Types &...> second) : id(id), first(first), second(second) {};
+                will_swap_event(IDType &id, std::tuple<Types &...> first,
+                                std::tuple<Types &...> second)
+                    : id(id), first(first), second(second) {};
 
                 IDType &id;
                 std::tuple<Types &...> first, second;
@@ -377,7 +388,9 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
             template<typename IDType, typename ...Types>
             struct did_swap_event {
-                did_swap_event(IDType id, std::tuple<Types &...> first, std::tuple<Types &...> second) : id(id), first(first), second(second) {};
+                did_swap_event(IDType id, std::tuple<Types &...> first,
+                               std::tuple<Types &...> second)
+                    : id(id), first(first), second(second) {};
 
                 const IDType id;
                 const std::tuple<Types &...> first, second;
@@ -425,8 +438,10 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         template<typename ...Events>
         struct registration {
             using event_types = type_list<Events...>;
+
         private:
             std::tuple<std::vector<listener_interface<Events> *>...> listeners;
+
         public:
             template<typename Event>
             listener_interface<Event> *add(listener_interface<Event> *listener) {
@@ -449,8 +464,10 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         template<typename ...Events>
         struct one_event_each_only {
             using event_types = type_list<Events...>;
+
         private:
             std::tuple<listener_interface<Events> *...> listeners;
+
         public:
             template<typename Event>
             listener_interface<Event> *add(listener_interface<Event> *listener) {
@@ -476,6 +493,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         template<typename... Types>
         struct zero_cost {
             using listener_types = type_list<Types...>;
+
         private:
             template<typename Event, size_t Idx>
             void apply(Event &e) {
@@ -524,7 +542,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         public:
             template<typename Event>
             void on(Event &e) {
-                constexpr auto not_empty_indices = not_empty_types::template filtered_index<helper::event_targeting<Event>::is_subscribe>();
+                constexpr auto not_empty_indices = not_empty_types::template filtered_index<
+                    helper::event_targeting<Event>::is_subscribe>();
                 apply_class<Event, 0>(e);
                 apply_entities<Event, not_empty_indices.size(), 0, not_empty_types>(e);
             };
@@ -685,15 +704,17 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             template<typename Columns>
             static constexpr auto reference(Columns& columns, std::size_t index) {
                 return [&]<std::size_t... Indices>(std::index_sequence<Indices...>) {
-                    return std::tuple<decltype(column<Indices>(columns)[index])...>{column<Indices>(columns)[index]...};
+                    return std::tuple<decltype(column<Indices>(columns)[index])...>{
+                        column<Indices>(columns)[index]...};
                 }(std::index_sequence_for<Types...>{});
             }
 
             template<typename Columns>
             static constexpr auto views(Columns& columns, std::size_t size) {
                 return [&]<std::size_t... Indices>(std::index_sequence<Indices...>) {
-                    return std::tuple{std::views::counted(std::ranges::begin(column<Indices>(columns)),
-                        static_cast<std::ptrdiff_t>(size))...};
+                    return std::tuple{
+                        std::views::counted(std::ranges::begin(column<Indices>(columns)),
+                            static_cast<std::ptrdiff_t>(size))...};
                 }(std::index_sequence_for<Types...>{});
             }
         };
@@ -715,7 +736,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             using value_type = Record;
             using element_types = [:record_element_types<Record>():];
             static constexpr auto members = std::define_static_array(
-                std::meta::nonstatic_data_members_of(^^Record, std::meta::access_context::current()));
+                std::meta::nonstatic_data_members_of(
+                    ^^Record, std::meta::access_context::current()));
 
             static consteval void validate_buffer_names() {
                 for (auto member : members) {
@@ -744,7 +766,9 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             }
 
             template<typename Columns>
-            static constexpr auto reference(Columns& columns, std::size_t index) { return row(columns, index); }
+            static constexpr auto reference(Columns& columns, std::size_t index) {
+                return row(columns, index);
+            }
 
             template<bool Const>
             struct view_column {
@@ -759,8 +783,9 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 using view_type = storage::soa<std::remove_const_t<Columns>,
                     view_column<std::is_const_v<Columns>>::template type>;
                 return [&]<std::size_t... Indices>(std::index_sequence<Indices...>) {
-                    return view_type{std::views::counted(std::ranges::begin(column<Indices>(columns)),
-                        static_cast<std::ptrdiff_t>(size))...};
+                    return view_type{
+                        std::views::counted(std::ranges::begin(column<Indices>(columns)),
+                            static_cast<std::ptrdiff_t>(size))...};
                 }(std::make_index_sequence<access::members.size()>{});
             }
 
@@ -773,7 +798,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
             template<typename Value, typename Function>
             static constexpr decltype(auto) apply_record(Value&& value, Function&& function) {
-                return [&]<std::size_t... Indices>(std::index_sequence<Indices...>) -> decltype(auto) {
+                return [&]<std::size_t... Indices>(
+                    std::index_sequence<Indices...>) -> decltype(auto) {
                     return std::invoke(std::forward<Function>(function),
                         std::forward<Value>(value).[:members[Indices]:]...);
                 }(std::make_index_sequence<members.size()>{});
@@ -866,31 +892,37 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         private:
             using column_indices = std::make_index_sequence<element_types::size>;
             template<size_t N>
-            using column_reference = decltype(schema_type::template column<N>(std::declval<columns_type&>()));
+            using column_reference =
+                decltype(schema_type::template column<N>(std::declval<columns_type&>()));
 
             template<typename... Values>
             using copy_traits = std::bool_constant<(std::is_copy_constructible_v<Values> && ...)>;
             template<typename... Values>
             using relocation_traits = std::bool_constant<
-                ((std::is_copy_constructible_v<Values> || std::is_nothrow_move_constructible_v<Values>) && ...)>;
+                ((std::is_copy_constructible_v<Values> ||
+                  std::is_nothrow_move_constructible_v<Values>) && ...)>;
             static constexpr bool copyable = element_types::template apply<copy_traits>::value;
-            static_assert(!Layout::resizable || element_types::template apply<relocation_traits>::value,
+            static_assert(
+                !Layout::resizable || element_types::template apply<relocation_traits>::value,
                 "Resizable columns require copy construction or noexcept move construction");
 
-            static constexpr bool vector_columns = []<size_t... Indices>(std::index_sequence<Indices...>) {
-                return Layout::resizable &&
-                    (std::same_as<column_reference<Indices>,
-                        std::vector<typename element_types::template get<Indices>>&> && ...);
-            }(column_indices{});
+            static constexpr bool vector_columns =
+                []<size_t... Indices>(std::index_sequence<Indices...>) {
+                    return Layout::resizable &&
+                        (std::same_as<column_reference<Indices>,
+                            std::vector<typename element_types::template get<Indices>>&> && ...);
+                }(column_indices{});
 
             // スカラの値初期化を標準 vector にまとめても、行の構築・破棄の副作用が変わらない場合に限る。
             // 独自列やメンバ初期化子を持つ構造体は、従来どおり行ごとに初期化する。
-            static constexpr bool bulk_resizable = []<size_t... Indices>(std::index_sequence<Indices...>) {
-                return vector_columns &&
-                    (std::is_scalar_v<typename element_types::template get<Indices>> && ...) &&
-                    (!schema_type::named || (std::is_trivially_default_constructible_v<value_type> &&
-                        std::is_trivially_destructible_v<value_type>));
-            }(column_indices{});
+            static constexpr bool bulk_resizable =
+                []<size_t... Indices>(std::index_sequence<Indices...>) {
+                    return vector_columns &&
+                        (std::is_scalar_v<typename element_types::template get<Indices>> && ...) &&
+                        (!schema_type::named ||
+                            (std::is_trivially_default_constructible_v<value_type> &&
+                             std::is_trivially_destructible_v<value_type>));
+                }(column_indices{});
             size_t m_size = 0;
 
             // 型パック・reflection の違いを隠し、宣言順に各列を処理する。
@@ -928,7 +960,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
             void assign_row(size_t index, data_tuple& values) {
                 [&]<size_t... Indices>(std::index_sequence<Indices...>) {
-                    ((get<Indices>()[index] = std::move_if_noexcept(std::get<Indices>(values))), ...);
+                    ((get<Indices>()[index] =
+                        std::move_if_noexcept(std::get<Indices>(values))), ...);
                 }(column_indices{});
             }
 
@@ -937,7 +970,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 if constexpr (std::same_as<T, bool>)
                     return column.size() != column.capacity();
                 else
-                    return column.data() && column.data() + column.size() < column.data() + column.capacity();
+                    return column.data() &&
+                           column.data() + column.size() < column.data() + column.capacity();
             }
 
             // 再確保を含む処理は、通常の追加経路から分離する。
@@ -949,7 +983,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                         reserve(size() + std::min(max_size() - size(), size() / 2 + 1));
                     try {
                         [&]<size_t... Indices>(std::index_sequence<Indices...>) {
-                            (get<Indices>().push_back(std::move_if_noexcept(std::get<Indices>(values))), ...);
+                            (get<Indices>().push_back(
+                                std::move_if_noexcept(std::get<Indices>(values))), ...);
                         }(column_indices{});
                     } catch (...) {
                         rollback();
@@ -965,9 +1000,11 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             void append_available(data_tuple& values, std::index_sequence<Indices...>) {
                 if constexpr (vector_columns) {
                     // 標準 allocator の配列内でポインタを比較し、再確保が不要なことを直接示す。
-                    if (size() < max_size() && (has_spare_capacity(get<Indices>()) && ...)) [[likely]] {
+                    if (size() < max_size() &&
+                        (has_spare_capacity(get<Indices>()) && ...)) [[likely]] {
                         try {
-                            (get<Indices>().emplace_back(std::move_if_noexcept(std::get<Indices>(values))), ...);
+                            (get<Indices>().emplace_back(
+                                std::move_if_noexcept(std::get<Indices>(values))), ...);
                         } catch (...) {
                             rollback();
                             throw;
@@ -988,16 +1025,21 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             columns_type entries{};
 
             basic_columns() = default;
+
             basic_columns(const basic_columns&) requires copyable = default;
+
             basic_columns(const basic_columns&) requires (!copyable) = delete;
-            basic_columns(basic_columns&& other) noexcept(std::is_nothrow_move_constructible_v<columns_type>)
+
+            basic_columns(basic_columns&& other) noexcept(
+                std::is_nothrow_move_constructible_v<columns_type>)
                 : m_size(other.m_size), entries(take_columns(other)) {
                 other.clear();
             }
 
-            static constexpr bool nothrow_swap = []<size_t... Indices>(std::index_sequence<Indices...>) {
-                return (std::is_nothrow_swappable_v<column_reference<Indices>> && ...);
-            }(column_indices{});
+            static constexpr bool nothrow_swap =
+                []<size_t... Indices>(std::index_sequence<Indices...>) {
+                    return (std::is_nothrow_swappable_v<column_reference<Indices>> && ...);
+                }(column_indices{});
 
             basic_columns& operator=(const basic_columns& other) requires copyable {
                 if (this != std::addressof(other)) {
@@ -1006,7 +1048,9 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 }
                 return *this;
             }
+
             basic_columns& operator=(const basic_columns&) requires (!copyable) = delete;
+
             basic_columns& operator=(basic_columns&& other) noexcept(
                 std::is_nothrow_move_constructible_v<columns_type> && nothrow_swap) {
                 basic_columns moved(std::move(other));
@@ -1022,13 +1066,23 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 swap(m_size, other.m_size);
             }
 
-            template<size_t N> decltype(auto) get() { return schema_type::template column<N>(entries); }
-            template<size_t N> decltype(auto) get() const { return schema_type::template column<N>(entries); }
+            template<size_t N>
+            decltype(auto) get() {
+                return schema_type::template column<N>(entries);
+            }
+
+            template<size_t N>
+            decltype(auto) get() const {
+                return schema_type::template column<N>(entries);
+            }
+
             [[nodiscard]] size_t size() const noexcept { return m_size; }
+
             [[nodiscard]] bool empty() const noexcept { return m_size == 0; }
 
             [[nodiscard]] size_t max_size() const noexcept {
-                auto limit = std::min(Layout::max_size, static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max()));
+                auto limit = std::min(Layout::max_size,
+                                      static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max()));
                 if constexpr (Layout::resizable) {
                     for_each_column(*this, [&](const auto& column) {
                         if constexpr (requires { column.max_size(); })
@@ -1118,7 +1172,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             }
 
             void swap_rows(size_t left, size_t right) {
-                if (left >= size() || right >= size()) throw std::out_of_range("Row index exceeds size");
+                if (left >= size() || right >= size())
+                    throw std::out_of_range("Row index exceeds size");
                 [&]<size_t... Indices>(std::index_sequence<Indices...>) {
                     (std::ranges::iter_swap(std::ranges::begin(get<Indices>()) + left,
                                            std::ranges::begin(get<Indices>()) + right), ...);
@@ -1126,14 +1181,21 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             }
 
             template<size_t N> auto column() {
-                return std::views::counted(std::ranges::begin(get<N>()), static_cast<ptrdiff_t>(size()));
+                return std::views::counted(std::ranges::begin(get<N>()),
+                                           static_cast<ptrdiff_t>(size()));
             }
+
             template<size_t N> auto column() const {
-                return std::views::counted(std::ranges::begin(get<N>()), static_cast<ptrdiff_t>(size()));
+                return std::views::counted(std::ranges::begin(get<N>()),
+                                           static_cast<ptrdiff_t>(size()));
             }
+
             auto columns() { return schema_type::views(entries, size()); }
+
             auto columns() const { return schema_type::views(entries, size()); }
+
             auto row(size_t index) { return schema_type::reference(entries, index); }
+
             auto row(size_t index) const { return schema_type::reference(entries, index); }
 
             value_type read(size_t index) const requires std::is_copy_constructible_v<value_type> {
@@ -1157,7 +1219,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             using base_type = basic_columns<Layout, Types...>;
             using id_type = IDType;
             // buffer が容量 1 の型で既定値を問い合わせる従来の契約を保つ。
-            static constexpr size_t default_max_size = Layout::resizable ? DynamicSizeUnlimited : 1024;
+            static constexpr size_t default_max_size =
+                Layout::resizable ? DynamicSizeUnlimited : 1024;
             static constexpr size_t max_size = Layout::max_size;
             using id_columns_type = typename Layout::template column<id_type>;
             id_columns_type ids{};
@@ -1180,19 +1243,23 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
         public:
             identified_storage() = default;
+
             identified_storage(const identified_storage&) = default;
+
             identified_storage(identified_storage&& other) noexcept(
                 std::is_nothrow_move_constructible_v<base_type> &&
                 std::is_nothrow_move_constructible_v<decltype(ids)>)
                 : base_type(std::move(other)), ids(take_ids(other)) {
                 if constexpr (Layout::resizable) other.ids.clear();
             }
+
             void swap(identified_storage& other) noexcept(
                 base_type::nothrow_swap && std::is_nothrow_swappable_v<decltype(ids)>) {
                 base_type::swap(other);
                 using std::swap;
                 swap(ids, other.ids);
             }
+
             identified_storage& operator=(const identified_storage& other)
                 requires std::is_copy_constructible_v<base_type> {
                 if (this != std::addressof(other)) {
@@ -1201,8 +1268,10 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 }
                 return *this;
             }
+
             identified_storage& operator=(const identified_storage&)
                 requires (!std::is_copy_constructible_v<base_type>) = delete;
+
             identified_storage& operator=(identified_storage&& other) noexcept(
                 std::is_nothrow_move_constructible_v<base_type> &&
                 std::is_nothrow_move_constructible_v<decltype(ids)> &&
@@ -1230,13 +1299,16 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
             template<typename... Args>
             std::expected<void, error_code> push_back(id_type id, Args&&... args) {
-                if (this->size() >= base_type::max_size()) return std::unexpected{error_code::buffer_over};
+                if (this->size() >= base_type::max_size())
+                    return std::unexpected{error_code::buffer_over};
                 typename base_type::data_tuple values(std::forward<Args>(args)...);
                 if constexpr (Layout::resizable) {
                     // ID 列から値を渡された場合にも、値を退避してから再確保する。
-                    if (ids.size() == ids.max_size()) return std::unexpected{error_code::buffer_over};
+                    if (ids.size() == ids.max_size())
+                        return std::unexpected{error_code::buffer_over};
                     if (ids.size() == ids.capacity())
-                        ids.reserve(ids.size() + std::min(ids.max_size() - ids.size(), ids.size() / 2 + 1));
+                        ids.reserve(ids.size() +
+                                    std::min(ids.max_size() - ids.size(), ids.size() / 2 + 1));
                     this->append_values(values);
                     try { ids.push_back(std::move_if_noexcept(id)); }
                     catch (...) { base_type::pop_back(); throw; }
@@ -1252,10 +1324,12 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 if constexpr (Layout::resizable) ids.pop_back();
                 base_type::pop_back();
             }
+
             void clear() noexcept {
                 if constexpr (Layout::resizable) ids.clear();
                 base_type::clear();
             }
+
             std::expected<void, error_code> swap(size_t left, size_t right) {
                 if (left >= this->size() || right >= this->size())
                     return std::unexpected{error_code::buffer_over};
@@ -1264,6 +1338,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 swap(ids[left], ids[right]);
                 return {};
             }
+
             std::expected<size_t, error_code> index(id_type id) const {
                 for (size_t i = 0; i < this->size(); ++i) if (ids[i] == id) return i;
                 return std::unexpected{error_code::not_found_id};
@@ -1283,7 +1358,9 @@ namespace SAITEKIKUUKAN_NAMESPACE {
     namespace _detail {
         struct indexed_access {
             template<typename Parent>
-            static constexpr decltype(auto) get(Parent& parent, size_t index) { return parent[index]; }
+            static constexpr decltype(auto) get(Parent& parent, size_t index) {
+                return parent[index];
+            }
         };
 
         template<typename Parent, typename Access = indexed_access>
@@ -1299,37 +1376,77 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             using value_type = std::remove_cvref_t<reference>;
             using iterator_category = std::conditional_t<std::is_lvalue_reference_v<reference>,
                 std::random_access_iterator_tag, std::input_iterator_tag>;
+
             struct arrow_proxy {
                 value_type row;
+
                 constexpr const value_type* operator->() const { return std::addressof(row); }
             };
+
             using pointer = std::conditional_t<std::is_lvalue_reference_v<reference>,
                 std::add_pointer_t<std::remove_reference_t<reference>>, arrow_proxy>;
 
             constexpr indexed_iterator() = default;
-            constexpr indexed_iterator(Parent* parent, difference_type index) : m_parent(parent), m_index(index) {}
+
+            constexpr indexed_iterator(Parent* parent, difference_type index)
+                : m_parent(parent), m_index(index) {}
+
             template<typename Other> requires std::is_convertible_v<Other*, Parent*>
             constexpr indexed_iterator(const indexed_iterator<Other, Access>& other)
                 : m_parent(other.m_parent), m_index(other.m_index) {}
 
-            constexpr reference operator*() const { return Access::get(*m_parent, static_cast<size_t>(m_index)); }
+            constexpr reference operator*() const {
+                return Access::get(*m_parent, static_cast<size_t>(m_index));
+            }
+
             constexpr pointer operator->() const {
                 if constexpr (std::is_lvalue_reference_v<reference>) return std::addressof(**this);
                 else return {**this};
             }
-            constexpr reference operator[](difference_type offset) const { return *(*this + offset); }
+
+            constexpr reference operator[](difference_type offset) const {
+                return *(*this + offset);
+            }
+
             constexpr indexed_iterator& operator++() { ++m_index; return *this; }
+
             constexpr indexed_iterator operator++(int) { auto old = *this; ++*this; return old; }
+
             constexpr indexed_iterator& operator--() { --m_index; return *this; }
+
             constexpr indexed_iterator operator--(int) { auto old = *this; --*this; return old; }
-            constexpr indexed_iterator& operator+=(difference_type offset) { m_index += offset; return *this; }
-            constexpr indexed_iterator& operator-=(difference_type offset) { m_index -= offset; return *this; }
-            friend constexpr indexed_iterator operator+(indexed_iterator it, difference_type n) { return it += n; }
-            friend constexpr indexed_iterator operator+(difference_type n, indexed_iterator it) { return it += n; }
-            friend constexpr indexed_iterator operator-(indexed_iterator it, difference_type n) { return it -= n; }
-            friend constexpr difference_type operator-(indexed_iterator a, indexed_iterator b) { return a.m_index - b.m_index; }
-            friend constexpr bool operator==(const indexed_iterator&, const indexed_iterator&) = default;
-            friend constexpr auto operator<=>(const indexed_iterator&, const indexed_iterator&) = default;
+
+            constexpr indexed_iterator& operator+=(difference_type offset) {
+                m_index += offset;
+                return *this;
+            }
+
+            constexpr indexed_iterator& operator-=(difference_type offset) {
+                m_index -= offset;
+                return *this;
+            }
+
+            friend constexpr indexed_iterator operator+(indexed_iterator it, difference_type n) {
+                return it += n;
+            }
+
+            friend constexpr indexed_iterator operator+(difference_type n, indexed_iterator it) {
+                return it += n;
+            }
+
+            friend constexpr indexed_iterator operator-(indexed_iterator it, difference_type n) {
+                return it -= n;
+            }
+
+            friend constexpr difference_type operator-(indexed_iterator a, indexed_iterator b) {
+                return a.m_index - b.m_index;
+            }
+
+            friend constexpr bool operator==(const indexed_iterator&,
+                                             const indexed_iterator&) = default;
+
+            friend constexpr auto operator<=>(const indexed_iterator&,
+                                              const indexed_iterator&) = default;
         };
 
         template<typename Access, typename Parent>
@@ -1361,73 +1478,117 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         using basic_iterator = _detail::indexed_iterator<parent_type<Const>>;
 
         size_t size() const { return m_storage.size(); }
+
         bool empty() const { return m_storage.empty(); }
+
         size_t capacity() const { return m_storage.capacity(); }
+
         size_t max_size() const { return m_storage.max_size(); }
+
         void reserve(size_t count) { m_storage.reserve(count); }
-        void resize(size_t count) requires std::default_initializable<value_type> { m_storage.resize(count); }
+
+        void resize(size_t count)
+            requires std::default_initializable<value_type>
+        {
+            m_storage.resize(count);
+        }
+
         void clear() { m_storage.clear(); }
+
         void pop_back() { m_storage.pop_back(); }
 
         void push_back(value_type value) { m_storage.push_value(std::move(value)); }
+
         template<typename... Args> requires (sizeof...(Args) == element_types::size &&
             !(sizeof...(Args) == 1 && (std::same_as<std::remove_cvref_t<Args>, value_type> && ...)))
         void push_back(Args&&... args) { m_storage.push_back(std::forward<Args>(args)...); }
 
         // 参照プロキシは行の値そのものではない。値のコピー・代入は read/write で明示する。
         auto operator[](size_t index) { return m_storage.row(index); }
+
         auto operator[](size_t index) const { return m_storage.row(index); }
+
         auto at(size_t index) {
             if (index >= size()) throw std::out_of_range("SoA row index");
             return (*this)[index];
         }
+
         auto at(size_t index) const {
             if (index >= size()) throw std::out_of_range("SoA row index");
             return (*this)[index];
         }
+
         value_type read(size_t index) const requires std::is_copy_constructible_v<value_type> {
             return m_storage.read(index);
         }
+
         void write(size_t index, value_type value) { m_storage.write(index, std::move(value)); }
+
         void erase_unordered(size_t index) {
             if (index >= size()) throw std::out_of_range("SoA row index");
             if (index != size() - 1) m_storage.swap_rows(index, size() - 1);
             pop_back();
         }
-        void swap(basic_soa& other) noexcept(storage_type::nothrow_swap) { m_storage.swap(other.m_storage); }
-        friend void swap(basic_soa& a, basic_soa& b) noexcept(storage_type::nothrow_swap) { a.swap(b); }
+
+        void swap(basic_soa& other) noexcept(storage_type::nothrow_swap) {
+            m_storage.swap(other.m_storage);
+        }
+
+        friend void swap(basic_soa& a, basic_soa& b) noexcept(storage_type::nothrow_swap) {
+            a.swap(b);
+        }
 
         template<size_t N> auto column() & { return m_storage.template column<N>(); }
+
         template<size_t N> auto column() const & { return m_storage.template column<N>(); }
+
         template<size_t N> auto column() && = delete;
+
         template<size_t N> auto column() const && = delete;
+
         template<size_t N> auto get() & { return column<N>(); }
+
         template<size_t N> auto get() const & { return column<N>(); }
+
         template<size_t N> auto get() && = delete;
+
         template<size_t N> auto get() const && = delete;
+
         auto columns() & { return m_storage.columns(); }
+
         auto columns() const & { return m_storage.columns(); }
+
         auto columns() && = delete;
+
         auto columns() const && = delete;
 
 #if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
         template<std::meta::info Member> auto column() & {
             return column<schema_type::template member_index<Member>()>();
         }
+
         template<std::meta::info Member> auto column() const & {
             return column<schema_type::template member_index<Member>()>();
         }
+
         template<std::meta::info Member> auto column() && = delete;
+
         template<std::meta::info Member> auto column() const && = delete;
 #endif
 
         using iterator = basic_iterator<false>;
         using const_iterator = basic_iterator<true>;
+
         iterator begin() { return {this, 0}; }
+
         iterator end() { return {this, static_cast<ptrdiff_t>(size())}; }
+
         const_iterator begin() const { return {this, 0}; }
+
         const_iterator end() const { return {this, static_cast<ptrdiff_t>(size())}; }
+
         const_iterator cbegin() const { return begin(); }
+
         const_iterator cend() const { return end(); }
     };
 
@@ -1444,7 +1605,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
     // 固定長 SoA をブロックとして保持する。ポインタ表の拡張で既存のチャンクは移動しない。
     template<size_t ChunkSize, typename... Types>
     class chunked_soa {
-        static_assert(ChunkSize > 0 && ChunkSize <= static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max()),
+        static_assert(ChunkSize > 0 &&
+                          ChunkSize <= static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max()),
             "ChunkSize must be positive and fit ptrdiff_t");
         using schema_type = _detail::schema<Types...>;
 
@@ -1467,12 +1629,15 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         chunk_type& chunk_for_row(size_t index) {
             return *m_chunks[index / ChunkSize];
         }
+
         const chunk_type& chunk_for_row(size_t index) const {
             return *m_chunks[index / ChunkSize];
         }
+
         void check_row_index(size_t index) const {
             if (index >= size()) throw std::out_of_range("Chunked SoA row index");
         }
+
         void check_chunk_index(size_t index) const {
             if (index >= chunk_count()) throw std::out_of_range("Chunk index");
         }
@@ -1481,6 +1646,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             if (size() == max_size()) throw std::length_error("Chunked SoA exceeds max_size");
             m_chunks.push_back(std::make_unique<chunk_type>());
         }
+
         void insert(data_tuple& values) {
             if (size() == capacity()) [[unlikely]] append_chunk();
             std::apply([&](auto&&... fields) {
@@ -1488,6 +1654,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             }, std::move(values));
             ++m_size;
         }
+
         void truncate(size_t count) noexcept {
             auto remaining = required_chunks(count);
             for (size_t i = remaining; i < chunk_count(); ++i) m_chunks[i]->clear();
@@ -1498,9 +1665,11 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             }
             m_size = count;
         }
+
         template<size_t Column> decltype(auto) column_at(size_t index) {
             return chunk_for_row(index).template column<Column>()[index % ChunkSize];
         }
+
         template<size_t Column> decltype(auto) column_at(size_t index) const {
             return chunk_for_row(index).template column<Column>()[index % ChunkSize];
         }
@@ -1514,8 +1683,11 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         template<size_t Column>
         struct column_access {
             template<typename Parent>
-            static decltype(auto) get(Parent& parent, size_t index) { return parent.template column_at<Column>(index); }
+            static decltype(auto) get(Parent& parent, size_t index) {
+                return parent.template column_at<Column>(index);
+            }
         };
+
         struct chunk_access {
             template<typename Parent>
             static auto get(Parent& parent, size_t index) { return parent.chunk(index); }
@@ -1528,52 +1700,81 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             friend class chunked_soa;
             using parent_type = std::conditional_t<Const, const chunk_type, chunk_type>;
             parent_type* m_chunk;
+
             explicit basic_chunk_view(parent_type* chunk) : m_chunk(chunk) {}
+
         public:
             size_t size() const { return m_chunk->size(); }
+
             bool empty() const { return m_chunk->empty(); }
+
             static constexpr size_t capacity() { return ChunkSize; }
+
             auto columns() const { return m_chunk->columns(); }
-            template<size_t Column> auto column() const { return m_chunk->template column<Column>(); }
+
+            template<size_t Column>
+            auto column() const {
+                return m_chunk->template column<Column>();
+            }
 #if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
-            template<std::meta::info Member> auto column() const { return m_chunk->template column<Member>(); }
+            template<std::meta::info Member>
+            auto column() const {
+                return m_chunk->template column<Member>();
+            }
 #endif
             template<size_t N> auto get() const { return column<N>(); }
+
             auto operator[](size_t index) const { return (*m_chunk)[index]; }
+
             auto at(size_t index) const { return m_chunk->at(index); }
+
             value_type read(size_t index) const requires std::is_copy_constructible_v<value_type> {
                 return m_chunk->read(index);
             }
+
             void write(size_t index, value_type value) const requires (!Const) {
                 m_chunk->write(index, std::move(value));
             }
+
             auto begin() const { return m_chunk->begin(); }
+
             auto end() const { return m_chunk->end(); }
         };
+
         using chunk_view = basic_chunk_view<false>;
         using const_chunk_view = basic_chunk_view<true>;
 
         // ========================== ownership ===========================
         chunked_soa() = default;
+
         chunked_soa(const chunked_soa& other) requires std::is_copy_constructible_v<chunk_type>
             : m_size(other.m_size) {
             m_chunks.reserve(other.m_chunks.size());
             for (const auto& chunk : other.m_chunks)
                 m_chunks.push_back(std::make_unique<chunk_type>(std::as_const(*chunk)));
         }
-        chunked_soa(const chunked_soa&) requires (!std::is_copy_constructible_v<chunk_type>) = delete;
+
+        chunked_soa(const chunked_soa&)
+            requires (!std::is_copy_constructible_v<chunk_type>) = delete;
+
         chunked_soa(chunked_soa&& other) noexcept
             : m_chunks(std::move(other.m_chunks)), m_size(std::exchange(other.m_size, 0)) {
             other.m_chunks.clear();
         }
-        chunked_soa& operator=(const chunked_soa& other) requires std::is_copy_constructible_v<chunk_type> {
+
+        chunked_soa& operator=(const chunked_soa& other)
+            requires std::is_copy_constructible_v<chunk_type>
+        {
             if (this != std::addressof(other)) {
                 chunked_soa copy(other);
                 swap(copy);
             }
             return *this;
         }
-        chunked_soa& operator=(const chunked_soa&) requires (!std::is_copy_constructible_v<chunk_type>) = delete;
+
+        chunked_soa& operator=(const chunked_soa&)
+            requires (!std::is_copy_constructible_v<chunk_type>) = delete;
+
         chunked_soa& operator=(chunked_soa&& other) noexcept {
             if (this != std::addressof(other)) {
                 m_chunks = std::move(other.m_chunks);
@@ -1582,30 +1783,41 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             }
             return *this;
         }
+
         void swap(chunked_soa& other) noexcept {
             m_chunks.swap(other.m_chunks);
             std::swap(m_size, other.m_size);
         }
+
         friend void swap(chunked_soa& left, chunked_soa& right) noexcept { left.swap(right); }
 
         // =========================== capacity ===========================
         size_t size() const noexcept { return m_size; }
+
         bool empty() const noexcept { return size() == 0; }
+
         size_t chunk_count() const noexcept { return required_chunks(size()); }
+
         size_t max_size() const noexcept {
             auto limit = static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max());
-            return m_chunks.max_size() < required_chunks(limit) ? m_chunks.max_size() * ChunkSize : limit;
+            return m_chunks.max_size() < required_chunks(limit)
+                ? m_chunks.max_size() * ChunkSize
+                : limit;
         }
+
         size_t capacity() const noexcept {
             auto limit = max_size();
             return m_chunks.size() > limit / ChunkSize ? limit : m_chunks.size() * ChunkSize;
         }
+
         void reserve(size_t count) {
-            if (count > max_size()) throw std::length_error("Chunked SoA capacity exceeds max_size");
+            if (count > max_size())
+                throw std::length_error("Chunked SoA capacity exceeds max_size");
             auto desired = required_chunks(count);
             m_chunks.reserve(desired);
             while (m_chunks.size() < desired) m_chunks.push_back(std::make_unique<chunk_type>());
         }
+
         void resize(size_t count) requires std::default_initializable<value_type> {
             if (count <= size()) {
                 truncate(count);
@@ -1627,12 +1839,15 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 throw;
             }
         }
+
         void clear() noexcept { truncate(0); }
+
         void pop_back() noexcept {
             if (empty()) return;
             chunk_for_row(m_size - 1).pop_back();
             --m_size;
         }
+
         void shrink_to_fit() {
             while (m_chunks.size() > chunk_count()) m_chunks.pop_back();
             m_chunks.shrink_to_fit();
@@ -1644,30 +1859,38 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 push_back(std::forward<decltype(fields)>(fields)...);
             });
         }
+
         template<typename... Args> requires (sizeof...(Args) == element_types::size &&
             !(sizeof...(Args) == 1 && (std::same_as<std::remove_cvref_t<Args>, value_type> && ...)))
         void push_back(Args&&... args) {
             data_tuple values(std::forward<Args>(args)...);
             insert(values);
         }
+
         auto operator[](size_t index) { return chunk_for_row(index)[index % ChunkSize]; }
+
         auto operator[](size_t index) const { return chunk_for_row(index)[index % ChunkSize]; }
+
         auto at(size_t index) {
             check_row_index(index);
             return (*this)[index];
         }
+
         auto at(size_t index) const {
             check_row_index(index);
             return (*this)[index];
         }
+
         value_type read(size_t index) const requires std::is_copy_constructible_v<value_type> {
             check_row_index(index);
             return chunk_for_row(index).read(index % ChunkSize);
         }
+
         void write(size_t index, value_type value) {
             check_row_index(index);
             chunk_for_row(index).write(index % ChunkSize, std::move(value));
         }
+
         void erase_unordered(size_t index) {
             check_row_index(index);
             auto last = size() - 1;
@@ -1680,45 +1903,75 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             check_chunk_index(index);
             return chunk_view(m_chunks[index].get());
         }
+
         const_chunk_view chunk(size_t index) const & {
             check_chunk_index(index);
             return const_chunk_view(m_chunks[index].get());
         }
+
         chunk_view chunk(size_t) && = delete;
+
         const_chunk_view chunk(size_t) const && = delete;
+
         auto chunks() & {
             return _detail::indexed_range<chunk_access>(*this, chunk_count());
         }
+
         auto chunks() const & {
             return _detail::indexed_range<chunk_access>(*this, chunk_count());
         }
+
         auto chunks() && = delete;
+
         auto chunks() const && = delete;
+
         template<size_t Column> auto column() & {
             return _detail::indexed_range<column_access<Column>>(*this, size());
         }
+
         template<size_t Column> auto column() const & {
             return _detail::indexed_range<column_access<Column>>(*this, size());
         }
+
         template<size_t Column> auto column() && = delete;
+
         template<size_t Column> auto column() const && = delete;
 #if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
-        template<std::meta::info Member> auto column() & { return column<schema_type::template member_index<Member>()>(); }
-        template<std::meta::info Member> auto column() const & { return column<schema_type::template member_index<Member>()>(); }
+        template<std::meta::info Member>
+        auto column() & {
+            return column<schema_type::template member_index<Member>()>();
+        }
+
+        template<std::meta::info Member>
+        auto column() const & {
+            return column<schema_type::template member_index<Member>()>();
+        }
+
         template<std::meta::info Member> auto column() && = delete;
+
         template<std::meta::info Member> auto column() const && = delete;
 #endif
         template<size_t N> auto get() & { return column<N>(); }
+
         template<size_t N> auto get() const & { return column<N>(); }
+
         template<size_t N> auto get() && = delete;
+
         template<size_t N> auto get() const && = delete;
+
         using iterator = _detail::indexed_iterator<chunked_soa>;
         using const_iterator = _detail::indexed_iterator<const chunked_soa>;
+
         iterator begin() { return {this, 0}; }
+
         iterator end() { return {this, static_cast<ptrdiff_t>(size())}; }
+
         const_iterator begin() const { return {this, 0}; }
+
         const_iterator end() const { return {this, static_cast<ptrdiff_t>(size())}; }
+
         const_iterator cbegin() const { return begin(); }
+
         const_iterator cend() const { return end(); }
     };
 
@@ -1791,11 +2044,14 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
             struct pointer {
                 reference row;
+
                 reference* operator->() { return std::addressof(row); }
+
                 const reference* operator->() const { return std::addressof(row); }
             };
 
             basic_iterator() = default;
+
             basic_iterator(parent_type<Const>* parent, difference_type index)
                 : m_parent(parent), m_index(index) {}
 
@@ -1804,27 +2060,47 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 : m_parent(other.m_parent), m_index(other.m_index) {}
 
             reference operator*() const { return {m_parent, static_cast<size_t>(m_index)}; }
+
             pointer operator->() const { return {**this}; }
+
             reference operator[](difference_type offset) const { return *(*this + offset); }
+
             basic_iterator& operator++() { ++m_index; return *this; }
+
             basic_iterator operator++(int) { auto old = *this; ++*this; return old; }
+
             basic_iterator& operator--() { --m_index; return *this; }
+
             basic_iterator operator--(int) { auto old = *this; --*this; return old; }
+
             basic_iterator& operator+=(difference_type offset) { m_index += offset; return *this; }
+
             basic_iterator& operator-=(difference_type offset) { m_index -= offset; return *this; }
 
             explicit operator bool() const {
                 return m_parent && m_index >= 0 && static_cast<size_t>(m_index) <= m_parent->size();
             }
+
             bool operator!() const { return !static_cast<bool>(*this); }
 
-            friend basic_iterator operator+(basic_iterator it, difference_type offset) { return it += offset; }
-            friend basic_iterator operator+(difference_type offset, basic_iterator it) { return it += offset; }
-            friend basic_iterator operator-(basic_iterator it, difference_type offset) { return it -= offset; }
+            friend basic_iterator operator+(basic_iterator it, difference_type offset) {
+                return it += offset;
+            }
+
+            friend basic_iterator operator+(difference_type offset, basic_iterator it) {
+                return it += offset;
+            }
+
+            friend basic_iterator operator-(basic_iterator it, difference_type offset) {
+                return it -= offset;
+            }
+
             friend difference_type operator-(basic_iterator left, basic_iterator right) {
                 return left.m_index - right.m_index;
             }
+
             friend bool operator==(const basic_iterator&, const basic_iterator&) = default;
+
             friend auto operator<=>(const basic_iterator&, const basic_iterator&) = default;
         };
 
@@ -1853,7 +2129,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
         template<typename... Args>
         std::expected<void, error_code> insert_columns(Args&&... args) {
-            static_assert(sizeof...(Args) == element_types::size, "Incorrect number of column values");
+            static_assert(sizeof...(Args) == element_types::size,
+                          "Incorrect number of column values");
             if (size() >= max_size)
                 return std::unexpected{error_code::buffer_over};
             std::optional<id_type> id = m_generator.next();
@@ -1867,7 +2144,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             } else {
                 data_tuple data(std::forward<Args>(args)...);
                 if constexpr (observes_will) {
-                    auto references = std::apply([](auto&... values) { return std::tie(values...); }, data);
+                    auto references =
+                        std::apply([](auto&... values) { return std::tie(values...); }, data);
                     will_insert_type event{*id, references};
                     m_eventsystem.on(event);
                     if (event.canceled())
@@ -1890,22 +2168,35 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         storage_type storage;
 
         template<size_t N>
-        [[nodiscard]] decltype(auto) get() { return schema_type::template column<N>(storage.entries); }
+        [[nodiscard]] decltype(auto) get() {
+            return schema_type::template column<N>(storage.entries);
+        }
 
         template<size_t N>
-        [[nodiscard]] decltype(auto) get() const { return schema_type::template column<N>(storage.entries); }
+        [[nodiscard]] decltype(auto) get() const {
+            return schema_type::template column<N>(storage.entries);
+        }
 
         [[nodiscard]] size_t size() const { return storage.size(); }
+
         [[nodiscard]] bool empty() const { return storage.empty(); }
+
         template<size_t N> auto column() {
-            return std::views::counted(std::ranges::begin(get<N>()), static_cast<ptrdiff_t>(size()));
+            return std::views::counted(std::ranges::begin(get<N>()),
+                                       static_cast<ptrdiff_t>(size()));
         }
+
         template<size_t N> auto column() const {
-            return std::views::counted(std::ranges::begin(get<N>()), static_cast<ptrdiff_t>(size()));
+            return std::views::counted(std::ranges::begin(get<N>()),
+                                       static_cast<ptrdiff_t>(size()));
         }
+
         auto columns() { return schema_type::views(storage.entries, size()); }
+
         auto columns() const { return schema_type::views(storage.entries, size()); }
+
         EventSystem& events() { return m_eventsystem; }
+
         const EventSystem& events() const { return m_eventsystem; }
 
         std::expected<size_t, error_code> index(id_type id) const { return storage.index(id); }
@@ -1940,7 +2231,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         }
 
         template<size_t N>
-        std::expected<_detail::lookup_value<const_element_reference<N>>, error_code> get(id_type id) const {
+        std::expected<_detail::lookup_value<const_element_reference<N>>, error_code>
+        get(id_type id) const {
             auto index = this->index(id);
             if (!index)
                 return std::unexpected{index.error()};
@@ -1951,10 +2243,12 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         std::expected<void, error_code> push_back(Args&&... args) {
             if constexpr (schema_type::named && sizeof...(Args) == 1) {
                 using argument = std::tuple_element_t<0, std::tuple<Args...>>;
-                if constexpr (std::same_as<std::remove_cvref_t<argument>, typename schema_type::record_type>) {
-                    return schema_type::apply_record(std::forward<Args>(args)..., [&](auto&&... values) {
-                        return insert_columns(std::forward<decltype(values)>(values)...);
-                    });
+                if constexpr (std::same_as<std::remove_cvref_t<argument>,
+                                           typename schema_type::record_type>) {
+                    return schema_type::apply_record(
+                        std::forward<Args>(args)..., [&](auto&&... values) {
+                            return insert_columns(std::forward<decltype(values)>(values)...);
+                        });
                 } else {
                     return insert_columns(std::forward<Args>(args)...);
                 }
@@ -1964,6 +2258,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         }
 
         void pop_back() { storage.pop_back(); }
+
         void clear() { storage.clear(); }
 
         std::expected<void, error_code> resize(size_t size) {
@@ -2012,10 +2307,15 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         }
 
         iterator begin() { return {this, 0}; }
+
         iterator end() { return {this, static_cast<ptrdiff_t>(size())}; }
+
         const_iterator begin() const { return {this, 0}; }
+
         const_iterator end() const { return {this, static_cast<ptrdiff_t>(size())}; }
+
         const_iterator cbegin() const { return begin(); }
+
         const_iterator cend() const { return end(); }
     };
 
@@ -2059,6 +2359,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 };
 
                 constexpr row_iterator() = default;
+
                 constexpr row_iterator(Columns* columns, difference_type index)
                     : m_columns(columns), m_index(index) {}
 
@@ -2071,29 +2372,50 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 }
 
                 constexpr pointer operator->() const { return {**this}; }
-                constexpr reference operator[](difference_type offset) const { return *(*this + offset); }
+
+                constexpr reference operator[](difference_type offset) const {
+                    return *(*this + offset);
+                }
 
                 constexpr row_iterator& operator++() { ++m_index; return *this; }
+
                 constexpr row_iterator operator++(int) { auto old = *this; ++*this; return old; }
+
                 constexpr row_iterator& operator--() { --m_index; return *this; }
+
                 constexpr row_iterator operator--(int) { auto old = *this; --*this; return old; }
-                constexpr row_iterator& operator+=(difference_type offset) { m_index += offset; return *this; }
-                constexpr row_iterator& operator-=(difference_type offset) { m_index -= offset; return *this; }
+
+                constexpr row_iterator& operator+=(difference_type offset) {
+                    m_index += offset;
+                    return *this;
+                }
+
+                constexpr row_iterator& operator-=(difference_type offset) {
+                    m_index -= offset;
+                    return *this;
+                }
 
                 friend constexpr row_iterator operator+(row_iterator it, difference_type offset) {
                     return it += offset;
                 }
+
                 friend constexpr row_iterator operator+(difference_type offset, row_iterator it) {
                     return it += offset;
                 }
+
                 friend constexpr row_iterator operator-(row_iterator it, difference_type offset) {
                     return it -= offset;
                 }
+
                 friend constexpr difference_type operator-(row_iterator left, row_iterator right) {
                     return left.m_index - right.m_index;
                 }
-                friend constexpr bool operator==(const row_iterator&, const row_iterator&) = default;
-                friend constexpr auto operator<=>(const row_iterator&, const row_iterator&) = default;
+
+                friend constexpr bool operator==(const row_iterator&,
+                                                 const row_iterator&) = default;
+
+                friend constexpr auto operator<=>(const row_iterator&,
+                                                  const row_iterator&) = default;
             };
 
             template<typename Columns>
@@ -2105,11 +2427,17 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 using iterator = row_iterator<Columns>;
 
                 constexpr rows_view() = default;
+
                 constexpr explicit rows_view(Columns& columns)
-                    : m_columns(std::addressof(columns)), m_size(row_access<Columns>::size(columns)) {}
+                    : m_columns(std::addressof(columns)),
+                      m_size(row_access<Columns>::size(columns)) {}
 
                 constexpr iterator begin() const { return {m_columns, 0}; }
-                constexpr iterator end() const { return {m_columns, static_cast<std::ptrdiff_t>(m_size)}; }
+
+                constexpr iterator end() const {
+                    return {m_columns, static_cast<std::ptrdiff_t>(m_size)};
+                }
+
                 constexpr std::size_t size() const { return m_size; }
             };
         }
