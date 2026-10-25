@@ -2390,9 +2390,11 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 if (members.size() != types.size())
                     throw "Record and column counts must match";
                 std::vector<std::meta::info> fields;
-                for (size_t i = 0; i < types.size(); ++i)
-                    fields.push_back(std::meta::data_member_spec(
-                        types[i], {.name = std::meta::identifier_of(members[i])}));
+                if constexpr (sizeof...(References) != 0) {
+                    for (size_t i = 0; i < types.size(); ++i)
+                        fields.push_back(std::meta::data_member_spec(
+                            types[i], {.name = std::meta::identifier_of(members[i])}));
+                }
                 std::meta::define_aggregate(^^type, fields);
             }
         };
