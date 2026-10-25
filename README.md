@@ -254,6 +254,12 @@ ctest --test-dir build/reflection --output-on-failure
 
 ---
 
+## Executable samples
+
+[test/samples](test/samples/README.md) contains standalone examples for type packs, fixed capacity,
+IDs and events, chunks, custom columns, move-only types, and reflected records.
+Each example validates its results and can be built individually or run through CTest.
+
 ## Performance reports
 
 Run `python3 tools/performance_report.py --compiler clang++`, or use
