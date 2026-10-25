@@ -2,7 +2,7 @@
 > 高性能な C++ 向け Data-Oriented Design (DOD) ライブラリ
 
 `saitekikuukan` は、ゲームエンジンやシミュレーション向けに設計された **データ指向のコンテナライブラリ** です。  
-型パラメータパックやリフレクションを使って SoA を扱えます。AoSoA・チャンク型は構想段階です。
+型パラメータパックやリフレクションを使って SoA と、固定容量の SoA を束ねたチャンク型（AoSoA）を扱えます。
 
 ---
 
@@ -100,6 +100,56 @@ const なコンテナでは `std::span<const T>` です。`std::vector<bool>` �
 `reserve` や失敗した拡張でも、一部の列が再確保される場合があります。
 一時的な SoA から列ビューを取得する操作は拒否します。
 独自列コンテナのムーブが例外を投げる場合、整合性を保つためムーブ元を空にすることがあります。
+
+## チャンク単位の SoA（AoSoA）
+
+`chunked_soa<ChunkSize, Types...>` は、既存の `fixed_soa` を固定容量のブロックとして束ねる ID なしのコンテナです。
+各ブロックを個別に保持するため、追加や `reserve` で既存行を移動させません。
+`ChunkSize` は正のコンパイル時定数で、2の累乗以外も指定できます。
+
+```cpp
+// C++23: 型パック
+kk::chunked_soa<128, float, float> points;
+points.resize(300); // 有効なチャンクは128行・128行・44行
+for (auto chunk : points.chunks()) {
+    auto [x, y] = chunk.columns();
+    for (std::size_t i = 0; i < chunk.size(); ++i) {
+        x[i] += 1.0f;
+        y[i] += 2.0f;
+    }
+}
+points.column<0>()[129] = 10.0f;
+points.erase_unordered(0); // 全体の末尾行を移して削除
+```
+
+```cpp
+// C++26: 既存と同じスキーマ生成を利用
+struct particle { float x = 0, y = 0; std::string name = "default"; };
+kk::record_chunked_soa<particle, 128> particles;
+particles.resize(300);
+for (auto chunk : particles.chunks()) {
+    auto storage = chunk.columns();
+    for (std::size_t i = 0; i < chunk.size(); ++i)
+        storage.x[i] += storage.y[i];
+}
+particles.begin()->name = "first";
+particles.column<^^particle::x>()[129] = 2.0f;
+```
+
+全体の `begin/end`・`operator[]`・`at`・`read/write` はチャンクをまたいでアクセスします。
+`column<N>()` / `get<N>()` も全体をランダムアクセスできるビューですが、連続範囲ではありません。
+`chunks()` / `chunk(i)` が返すビューでは、各列が有効行だけの `std::span` になります。
+SIMD化を狙う走査は、上の例のようにチャンクごとの連続列を使います。
+個別チャンクのビューからは要素だけを更新でき、行数はコンテナ側で管理します。
+const なコンテナの列・行・チャンクは、いずれも const な要素を参照します。
+
+`reserve(n)` は必要なチャンクを構築し、`capacity()` は確保済みの行容量、`chunk_count()` は有効行を持つチャンク数を返します。
+`resize(n)` は各行を元の構造体のデフォルト値で初期化し、失敗時は全体の行数を戻します。
+固定長 SoA と同じく容量分の列要素を構築するため、列の要素にはデフォルト構築が必要です。
+`pop_back`・`clear`・縮小後も未使用スロットのオブジェクトを保持し、`shrink_to_fit()` で未使用チャンクを解放します。
+コピー可能な列ならコピーに対応し、move-only の列も保持できます。
+要素の代入・交換が例外を投げる場合の `write` / `erase_unordered` は一部の値が変わることがあります。
+ビューの範囲は取得時点の行数なので、サイズの変更後は取り直してください。
 
 ## 構造体を buffer のスキーマにする（C++26）
 

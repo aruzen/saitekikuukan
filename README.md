@@ -2,7 +2,7 @@
 > High-performance Data-Oriented Design (DOD) Library for C++
 
 `saitekikuukan` is a **data-oriented container library** designed for game engines and simulations.  
-It provides SoA containers through type packs and reflection. AoSoA and chunked containers remain planned.
+It provides SoA and chunked AoSoA containers through type packs and reflection.
 
 ---
 
@@ -96,6 +96,55 @@ for copy assignment. Throwing element assignment/swapping may partially change v
 even `reserve` or failed growth may reallocate some columns.
 Obtaining column views from temporary SoA containers is rejected.
 If a custom column's move constructor throws, the source may be cleared to keep column lengths consistent.
+
+## Chunked SoA (AoSoA)
+
+`chunked_soa<ChunkSize, Types...>` groups existing fixed-capacity SoA containers into independently
+owned blocks without IDs. Appending or reserving blocks preserves references to existing rows.
+Chunk sizes are positive compile-time constants; powers of two are optional.
+
+```cpp
+// C++23
+kk::chunked_soa<128, float, float> points;
+points.resize(300); // Active block lengths: 128, 128, 44
+for (auto chunk : points.chunks()) {
+    auto [x, y] = chunk.columns();
+    for (std::size_t i = 0; i < chunk.size(); ++i) {
+        x[i] += 1.0f;
+        y[i] += 2.0f;
+    }
+}
+points.column<0>()[129] = 10.0f;
+points.erase_unordered(0);
+```
+
+```cpp
+// C++26 with the existing reflection schema
+struct particle { float x = 0, y = 0; std::string name = "default"; };
+kk::record_chunked_soa<particle, 128> particles;
+particles.resize(300);
+for (auto chunk : particles.chunks()) {
+    auto storage = chunk.columns();
+    for (std::size_t i = 0; i < chunk.size(); ++i)
+        storage.x[i] += storage.y[i];
+}
+particles.begin()->name = "first";
+particles.column<^^particle::x>()[129] = 2.0f;
+```
+
+Whole-container row iteration, indexing, and `read/write` cross block boundaries.
+Whole-column `column<N>()` / `get<N>()` views provide random access without promising contiguous storage.
+The views returned by `chunks()` / `chunk(i)` expose contiguous active columns as spans;
+use these for vectorizable inner loops. They permit element updates while the owner manages row counts.
+Const owners expose const elements through every view.
+
+`reserve(n)` constructs blocks, `capacity()` reports allocated row capacity, and `chunk_count()` counts active blocks.
+`resize(n)` preserves record defaults and restores row counts on failure.
+Like fixed SoA, blocks construct all column slots upfront, so column elements must be default constructible.
+Unused slot objects remain alive after pop, clear, or shrink; `shrink_to_fit()` releases unused blocks.
+Copyable columns support copying; move-only columns are also supported.
+Throwing element assignment/swapping may partially update values during `write` / `erase_unordered`.
+Views capture their row ranges; reacquire them after changing sizes.
 
 ## Struct schemas for buffer (C++26)
 
