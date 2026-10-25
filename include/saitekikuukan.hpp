@@ -864,6 +864,10 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             using columns_type = typename schema_type::template columns<Layout::template column>;
 
         private:
+            using column_indices = std::make_index_sequence<element_types::size>;
+            template<size_t N>
+            using column_reference = decltype(schema_type::template column<N>(std::declval<columns_type&>()));
+
             template<typename... Values>
             using copy_traits = std::bool_constant<(std::is_copy_constructible_v<Values> && ...)>;
             template<typename... Values>
@@ -872,17 +876,30 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             static constexpr bool copyable = element_types::template apply<copy_traits>::value;
             static_assert(!Layout::resizable || element_types::template apply<relocation_traits>::value,
                 "Resizable columns require copy construction or noexcept move construction");
+
+            static constexpr bool vector_columns = []<size_t... Indices>(std::index_sequence<Indices...>) {
+                return Layout::resizable &&
+                    (std::same_as<column_reference<Indices>,
+                        std::vector<typename element_types::template get<Indices>>&> && ...);
+            }(column_indices{});
+
             // スカラの値初期化を標準 vector にまとめても、行の構築・破棄の副作用が変わらない場合に限る。
             // 独自列やメンバ初期化子を持つ構造体は、従来どおり行ごとに初期化する。
             static constexpr bool bulk_resizable = []<size_t... Indices>(std::index_sequence<Indices...>) {
-                return Layout::resizable &&
+                return vector_columns &&
                     (std::is_scalar_v<typename element_types::template get<Indices>> && ...) &&
-                    (std::same_as<decltype(schema_type::template column<Indices>(std::declval<columns_type&>())),
-                        std::vector<typename element_types::template get<Indices>>&> && ...) &&
                     (!schema_type::named || (std::is_trivially_default_constructible_v<value_type> &&
                         std::is_trivially_destructible_v<value_type>));
-            }(std::make_index_sequence<element_types::size>{});
+            }(column_indices{});
             size_t m_size = 0;
+
+            // 型パック・reflection の違いを隠し、宣言順に各列を処理する。
+            template<typename Self, typename Function>
+            static void for_each_column(Self& self, Function&& function) {
+                [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                    (function(self.template get<Indices>()), ...);
+                }(column_indices{});
+            }
 
             static columns_type take_columns(basic_columns& other) noexcept(
                 std::is_nothrow_move_constructible_v<columns_type>) {
@@ -892,17 +909,35 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                     return other.entries;
                 } else {
                     // 列の移動中に失敗しても、移動元の行数と列長を一致させる。
-                    try { return std::move(other.entries); }
-                    catch (...) { other.clear(); throw; }
+                    try {
+                        return std::move(other.entries);
+                    } catch (...) {
+                        other.clear();
+                        throw;
+                    }
                 }
             }
 
             void rollback() noexcept {
                 if constexpr (Layout::resizable) {
-                    [&]<size_t... Indices>(std::index_sequence<Indices...>) {
-                        ([&] { while (get<Indices>().size() > m_size) get<Indices>().pop_back(); }(), ...);
-                    }(std::make_index_sequence<element_types::size>{});
+                    for_each_column(*this, [&](auto& column) {
+                        while (column.size() > m_size) column.pop_back();
+                    });
                 }
+            }
+
+            void assign_row(size_t index, data_tuple& values) {
+                [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                    ((get<Indices>()[index] = std::move_if_noexcept(std::get<Indices>(values))), ...);
+                }(column_indices{});
+            }
+
+            template<typename T>
+            static bool has_spare_capacity(const std::vector<T>& column) {
+                if constexpr (std::same_as<T, bool>)
+                    return column.size() != column.capacity();
+                else
+                    return column.data() && column.data() + column.size() < column.data() + column.capacity();
             }
 
             // 再確保を含む処理は、通常の追加経路から分離する。
@@ -915,33 +950,22 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                     try {
                         [&]<size_t... Indices>(std::index_sequence<Indices...>) {
                             (get<Indices>().push_back(std::move_if_noexcept(std::get<Indices>(values))), ...);
-                        }(std::make_index_sequence<element_types::size>{});
+                        }(column_indices{});
                     } catch (...) {
                         rollback();
                         throw;
                     }
                 } else {
-                    [&]<size_t... Indices>(std::index_sequence<Indices...>) {
-                        ((get<Indices>()[m_size] = std::move_if_noexcept(std::get<Indices>(values))), ...);
-                    }(std::make_index_sequence<element_types::size>{});
+                    assign_row(m_size, values);
                 }
                 ++m_size;
             }
 
             template<size_t... Indices>
             void append_available(data_tuple& values, std::index_sequence<Indices...>) {
-                constexpr bool vector_columns = Layout::resizable &&
-                    (std::same_as<decltype(schema_type::template column<Indices>(std::declval<columns_type&>())),
-                        std::vector<typename element_types::template get<Indices>>&> && ...);
                 if constexpr (vector_columns) {
                     // 標準 allocator の配列内でポインタを比較し、再確保が不要なことを直接示す。
-                    auto has_room = []<typename T>(const std::vector<T>& column) {
-                        if constexpr (std::same_as<T, bool>)
-                            return column.size() != column.capacity();
-                        else
-                            return column.data() && column.data() + column.size() < column.data() + column.capacity();
-                    };
-                    if (size() < max_size() && (has_room(get<Indices>()) && ...)) [[likely]] {
+                    if (size() < max_size() && (has_spare_capacity(get<Indices>()) && ...)) [[likely]] {
                         try {
                             (get<Indices>().emplace_back(std::move_if_noexcept(std::get<Indices>(values))), ...);
                         } catch (...) {
@@ -957,7 +981,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
         protected:
             void append_values(data_tuple& values) {
-                append_available(values, std::make_index_sequence<element_types::size>{});
+                append_available(values, column_indices{});
             }
 
         public:
@@ -967,12 +991,13 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             basic_columns(const basic_columns&) requires copyable = default;
             basic_columns(const basic_columns&) requires (!copyable) = delete;
             basic_columns(basic_columns&& other) noexcept(std::is_nothrow_move_constructible_v<columns_type>)
-                : m_size(other.m_size), entries(take_columns(other)) { other.clear(); }
+                : m_size(other.m_size), entries(take_columns(other)) {
+                other.clear();
+            }
 
             static constexpr bool nothrow_swap = []<size_t... Indices>(std::index_sequence<Indices...>) {
-                return (std::is_nothrow_swappable_v<decltype(schema_type::template column<Indices>(
-                    std::declval<columns_type&>()))> && ...);
-            }(std::make_index_sequence<element_types::size>{});
+                return (std::is_nothrow_swappable_v<column_reference<Indices>> && ...);
+            }(column_indices{});
 
             basic_columns& operator=(const basic_columns& other) requires copyable {
                 if (this != std::addressof(other)) {
@@ -993,7 +1018,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 using std::swap;
                 [&]<size_t... Indices>(std::index_sequence<Indices...>) {
                     (swap(get<Indices>(), other.template get<Indices>()), ...);
-                }(std::make_index_sequence<element_types::size>{});
+                }(column_indices{});
                 swap(m_size, other.m_size);
             }
 
@@ -1005,10 +1030,10 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             [[nodiscard]] size_t max_size() const noexcept {
                 auto limit = std::min(Layout::max_size, static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max()));
                 if constexpr (Layout::resizable) {
-                    [&]<size_t... Indices>(std::index_sequence<Indices...>) {
-                        ([&] { if constexpr (requires { get<Indices>().max_size(); })
-                            limit = std::min(limit, get<Indices>().max_size()); }(), ...);
-                    }(std::make_index_sequence<element_types::size>{});
+                    for_each_column(*this, [&](const auto& column) {
+                        if constexpr (requires { column.max_size(); })
+                            limit = std::min(limit, column.max_size());
+                    });
                 }
                 return limit;
             }
@@ -1016,11 +1041,12 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             [[nodiscard]] size_t capacity() const noexcept {
                 auto count = max_size();
                 if constexpr (Layout::resizable) {
-                    [&]<size_t... Indices>(std::index_sequence<Indices...>) {
-                        ([&] { if constexpr (requires { get<Indices>().capacity(); })
-                            count = std::min(count, get<Indices>().capacity());
-                            else count = std::min(count, get<Indices>().size()); }(), ...);
-                    }(std::make_index_sequence<element_types::size>{});
+                    for_each_column(*this, [&](const auto& column) {
+                        if constexpr (requires { column.capacity(); })
+                            count = std::min(count, column.capacity());
+                        else
+                            count = std::min(count, column.size());
+                    });
                 }
                 return count;
             }
@@ -1029,10 +1055,10 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 if (count > max_size())
                     throw std::length_error("Column capacity exceeds max_size");
                 if constexpr (Layout::resizable) {
-                    [&]<size_t... Indices>(std::index_sequence<Indices...>) {
-                        ([&] { if constexpr (requires { get<Indices>().reserve(count); })
-                            get<Indices>().reserve(count); }(), ...);
-                    }(std::make_index_sequence<element_types::size>{});
+                    for_each_column(*this, [&](auto& column) {
+                        if constexpr (requires { column.reserve(count); })
+                            column.reserve(count);
+                    });
                 }
             }
 
@@ -1056,9 +1082,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                     m_size = count;
                 } else if constexpr (bulk_resizable) {
                     try {
-                        [&]<size_t... Indices>(std::index_sequence<Indices...>) {
-                            (get<Indices>().resize(count), ...);
-                        }(std::make_index_sequence<element_types::size>{});
+                        for_each_column(*this, [&](auto& column) { column.resize(count); });
                     } catch (...) {
                         rollback();
                         throw;
@@ -1081,18 +1105,14 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             void pop_back() noexcept {
                 if (empty()) return;
                 if constexpr (Layout::resizable) {
-                    [&]<size_t... Indices>(std::index_sequence<Indices...>) {
-                        (get<Indices>().pop_back(), ...);
-                    }(std::make_index_sequence<element_types::size>{});
+                    for_each_column(*this, [](auto& column) { column.pop_back(); });
                 }
                 --m_size;
             }
 
             void clear() noexcept {
                 if constexpr (Layout::resizable) {
-                    [&]<size_t... Indices>(std::index_sequence<Indices...>) {
-                        (get<Indices>().clear(), ...);
-                    }(std::make_index_sequence<element_types::size>{});
+                    for_each_column(*this, [](auto& column) { column.clear(); });
                 }
                 m_size = 0;
             }
@@ -1102,7 +1122,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 [&]<size_t... Indices>(std::index_sequence<Indices...>) {
                     (std::ranges::iter_swap(std::ranges::begin(get<Indices>()) + left,
                                            std::ranges::begin(get<Indices>()) + right), ...);
-                }(std::make_index_sequence<element_types::size>{});
+                }(column_indices{});
             }
 
             template<size_t N> auto column() {
@@ -1120,16 +1140,14 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 if (index >= size()) throw std::out_of_range("Row index exceeds size");
                 return [&]<size_t... Indices>(std::index_sequence<Indices...>) {
                     return value_type{get<Indices>()[index]...};
-                }(std::make_index_sequence<element_types::size>{});
+                }(column_indices{});
             }
 
             void write(size_t index, value_type value) {
                 if (index >= size()) throw std::out_of_range("Row index exceeds size");
                 schema_type::apply_value(std::move(value), [&](auto&&... fields) {
                     data_tuple values(std::forward<decltype(fields)>(fields)...);
-                    [&]<size_t... Indices>(std::index_sequence<Indices...>) {
-                        ((get<Indices>()[index] = std::move_if_noexcept(std::get<Indices>(values))), ...);
-                    }(std::make_index_sequence<element_types::size>{});
+                    assign_row(index, values);
                 });
             }
         };
@@ -1313,6 +1331,14 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             friend constexpr bool operator==(const indexed_iterator&, const indexed_iterator&) = default;
             friend constexpr auto operator<=>(const indexed_iterator&, const indexed_iterator&) = default;
         };
+
+        template<typename Access, typename Parent>
+        auto indexed_range(Parent& parent, size_t count) {
+            using iterator = indexed_iterator<Parent, Access>;
+            return std::ranges::subrange(
+                iterator{std::addressof(parent), 0},
+                iterator{std::addressof(parent), static_cast<ptrdiff_t>(count)});
+        }
     }
 
     // ================================== soa ==================================
@@ -1436,6 +1462,21 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         static constexpr size_t required_chunks(size_t count) noexcept {
             return count / ChunkSize + (count % ChunkSize != 0);
         }
+
+        // unique_ptr 自体の const 性は参照先に伝わらないため、ここで const を付ける。
+        chunk_type& chunk_for_row(size_t index) {
+            return *m_chunks[index / ChunkSize];
+        }
+        const chunk_type& chunk_for_row(size_t index) const {
+            return *m_chunks[index / ChunkSize];
+        }
+        void check_row_index(size_t index) const {
+            if (index >= size()) throw std::out_of_range("Chunked SoA row index");
+        }
+        void check_chunk_index(size_t index) const {
+            if (index >= chunk_count()) throw std::out_of_range("Chunk index");
+        }
+
         void append_chunk() {
             if (size() == max_size()) throw std::length_error("Chunked SoA exceeds max_size");
             m_chunks.push_back(std::make_unique<chunk_type>());
@@ -1443,7 +1484,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         void insert(data_tuple& values) {
             if (size() == capacity()) [[unlikely]] append_chunk();
             std::apply([&](auto&&... fields) {
-                m_chunks[m_size / ChunkSize]->push_back(std::forward<decltype(fields)>(fields)...);
+                chunk_for_row(m_size).push_back(std::forward<decltype(fields)>(fields)...);
             }, std::move(values));
             ++m_size;
         }
@@ -1458,11 +1499,18 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             m_size = count;
         }
         template<size_t Column> decltype(auto) column_at(size_t index) {
-            return m_chunks[index / ChunkSize]->template column<Column>()[index % ChunkSize];
+            return chunk_for_row(index).template column<Column>()[index % ChunkSize];
         }
         template<size_t Column> decltype(auto) column_at(size_t index) const {
-            return std::as_const(*m_chunks[index / ChunkSize]).template column<Column>()[index % ChunkSize];
+            return chunk_for_row(index).template column<Column>()[index % ChunkSize];
         }
+
+        void swap_rows(size_t left, size_t right) {
+            [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                (std::ranges::swap(column_at<Indices>(left), column_at<Indices>(right)), ...);
+            }(std::make_index_sequence<element_types::size>{});
+        }
+
         template<size_t Column>
         struct column_access {
             template<typename Parent>
@@ -1505,6 +1553,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         using chunk_view = basic_chunk_view<false>;
         using const_chunk_view = basic_chunk_view<true>;
 
+        // ========================== ownership ===========================
         chunked_soa() = default;
         chunked_soa(const chunked_soa& other) requires std::is_copy_constructible_v<chunk_type>
             : m_size(other.m_size) {
@@ -1514,9 +1563,14 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         }
         chunked_soa(const chunked_soa&) requires (!std::is_copy_constructible_v<chunk_type>) = delete;
         chunked_soa(chunked_soa&& other) noexcept
-            : m_chunks(std::move(other.m_chunks)), m_size(std::exchange(other.m_size, 0)) { other.m_chunks.clear(); }
+            : m_chunks(std::move(other.m_chunks)), m_size(std::exchange(other.m_size, 0)) {
+            other.m_chunks.clear();
+        }
         chunked_soa& operator=(const chunked_soa& other) requires std::is_copy_constructible_v<chunk_type> {
-            if (this != std::addressof(other)) { chunked_soa copy(other); swap(copy); }
+            if (this != std::addressof(other)) {
+                chunked_soa copy(other);
+                swap(copy);
+            }
             return *this;
         }
         chunked_soa& operator=(const chunked_soa&) requires (!std::is_copy_constructible_v<chunk_type>) = delete;
@@ -1528,9 +1582,13 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             }
             return *this;
         }
-        void swap(chunked_soa& other) noexcept { m_chunks.swap(other.m_chunks); std::swap(m_size, other.m_size); }
+        void swap(chunked_soa& other) noexcept {
+            m_chunks.swap(other.m_chunks);
+            std::swap(m_size, other.m_size);
+        }
         friend void swap(chunked_soa& left, chunked_soa& right) noexcept { left.swap(right); }
 
+        // =========================== capacity ===========================
         size_t size() const noexcept { return m_size; }
         bool empty() const noexcept { return size() == 0; }
         size_t chunk_count() const noexcept { return required_chunks(size()); }
@@ -1549,7 +1607,10 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             while (m_chunks.size() < desired) m_chunks.push_back(std::make_unique<chunk_type>());
         }
         void resize(size_t count) requires std::default_initializable<value_type> {
-            if (count <= size()) { truncate(count); return; }
+            if (count <= size()) {
+                truncate(count);
+                return;
+            }
             reserve(count);
             auto old_size = size();
             try {
@@ -1561,18 +1622,23 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                     chunk.resize(desired);
                     m_size += desired - previous;
                 }
-            } catch (...) { truncate(old_size); throw; }
+            } catch (...) {
+                truncate(old_size);
+                throw;
+            }
         }
         void clear() noexcept { truncate(0); }
         void pop_back() noexcept {
             if (empty()) return;
-            m_chunks[(m_size - 1) / ChunkSize]->pop_back();
+            chunk_for_row(m_size - 1).pop_back();
             --m_size;
         }
         void shrink_to_fit() {
             while (m_chunks.size() > chunk_count()) m_chunks.pop_back();
             m_chunks.shrink_to_fit();
         }
+
+        // ============================= rows =============================
         void push_back(value_type value) {
             schema_type::apply_value(std::move(value), [&](auto&&... fields) {
                 push_back(std::forward<decltype(fields)>(fields)...);
@@ -1584,60 +1650,55 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             data_tuple values(std::forward<Args>(args)...);
             insert(values);
         }
-        auto operator[](size_t index) { return (*m_chunks[index / ChunkSize])[index % ChunkSize]; }
-        auto operator[](size_t index) const { return std::as_const(*m_chunks[index / ChunkSize])[index % ChunkSize]; }
+        auto operator[](size_t index) { return chunk_for_row(index)[index % ChunkSize]; }
+        auto operator[](size_t index) const { return chunk_for_row(index)[index % ChunkSize]; }
         auto at(size_t index) {
-            if (index >= size()) throw std::out_of_range("Chunked SoA row index");
+            check_row_index(index);
             return (*this)[index];
         }
         auto at(size_t index) const {
-            if (index >= size()) throw std::out_of_range("Chunked SoA row index");
+            check_row_index(index);
             return (*this)[index];
         }
         value_type read(size_t index) const requires std::is_copy_constructible_v<value_type> {
-            if (index >= size()) throw std::out_of_range("Chunked SoA row index");
-            return std::as_const(*m_chunks[index / ChunkSize]).read(index % ChunkSize);
+            check_row_index(index);
+            return chunk_for_row(index).read(index % ChunkSize);
         }
         void write(size_t index, value_type value) {
-            if (index >= size()) throw std::out_of_range("Chunked SoA row index");
-            m_chunks[index / ChunkSize]->write(index % ChunkSize, std::move(value));
+            check_row_index(index);
+            chunk_for_row(index).write(index % ChunkSize, std::move(value));
         }
         void erase_unordered(size_t index) {
-            if (index >= size()) throw std::out_of_range("Chunked SoA row index");
+            check_row_index(index);
             auto last = size() - 1;
-            if (index != last) [&]<size_t... Indices>(std::index_sequence<Indices...>) {
-                (std::ranges::swap(column_at<Indices>(index), column_at<Indices>(last)), ...);
-            }(std::make_index_sequence<element_types::size>{});
+            if (index != last) swap_rows(index, last);
             pop_back();
         }
 
+        // ============================= views ============================
         chunk_view chunk(size_t index) & {
-            if (index >= chunk_count()) throw std::out_of_range("Chunk index");
+            check_chunk_index(index);
             return chunk_view(m_chunks[index].get());
         }
         const_chunk_view chunk(size_t index) const & {
-            if (index >= chunk_count()) throw std::out_of_range("Chunk index");
+            check_chunk_index(index);
             return const_chunk_view(m_chunks[index].get());
         }
         chunk_view chunk(size_t) && = delete;
         const_chunk_view chunk(size_t) const && = delete;
         auto chunks() & {
-            using it = _detail::indexed_iterator<chunked_soa, chunk_access>;
-            return std::ranges::subrange(it{this, 0}, it{this, static_cast<ptrdiff_t>(chunk_count())});
+            return _detail::indexed_range<chunk_access>(*this, chunk_count());
         }
         auto chunks() const & {
-            using it = _detail::indexed_iterator<const chunked_soa, chunk_access>;
-            return std::ranges::subrange(it{this, 0}, it{this, static_cast<ptrdiff_t>(chunk_count())});
+            return _detail::indexed_range<chunk_access>(*this, chunk_count());
         }
         auto chunks() && = delete;
         auto chunks() const && = delete;
         template<size_t Column> auto column() & {
-            using it = _detail::indexed_iterator<chunked_soa, column_access<Column>>;
-            return std::ranges::subrange(it{this, 0}, it{this, static_cast<ptrdiff_t>(size())});
+            return _detail::indexed_range<column_access<Column>>(*this, size());
         }
         template<size_t Column> auto column() const & {
-            using it = _detail::indexed_iterator<const chunked_soa, column_access<Column>>;
-            return std::ranges::subrange(it{this, 0}, it{this, static_cast<ptrdiff_t>(size())});
+            return _detail::indexed_range<column_access<Column>>(*this, size());
         }
         template<size_t Column> auto column() && = delete;
         template<size_t Column> auto column() const && = delete;
