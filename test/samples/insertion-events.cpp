@@ -16,7 +16,8 @@ struct validate_score : kk::eventsystem::listener_interface<before_insert> {
             return;
         }
         score = std::min(score, 100);
-        if (name.empty()) name = "anonymous";
+        if (name.empty())
+            name = "anonymous";
     }
 };
 
@@ -30,9 +31,9 @@ struct count_insertions : kk::eventsystem::listener_interface<after_insert> {
     }
 };
 
-using scores = kk::buffer<kk::generator::iota,
-    kk::eventsystem::registration<before_insert, after_insert>,
-    kk::storage::dynamic_storage, 4, int, std::string>;
+using scores = kk::buffer<kk::type_list<int, std::string>, kk::strategy::structure_of_array,
+    kk::storage::dynamic_layout<4>, kk::identity::generated<>,
+    kk::eventsystem::registration<before_insert, after_insert>>;
 
 int main() {
     // 登録先はリスナを所有しない。登録中はリスナを生存させる。

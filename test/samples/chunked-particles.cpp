@@ -19,7 +19,7 @@ void step(particles& values, float dt) {
 int main() {
     particles values;
     for (int i = 0; i < 300; ++i)
-        values.push_back(float(i), float(-i), 2.0f, 4.0f);
+        sample::check(values.push_back(float(i), float(-i), 2.0f, 4.0f).has_value());
 
     sample::check(values.chunk_count() == 3);
     sample::check(values.chunk(0).size() == 128 && values.chunk(2).size() == 44);

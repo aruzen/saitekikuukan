@@ -8,14 +8,17 @@ using buffer_test::check;
 
 struct select_second {
     template<typename Parent>
-    static constexpr decltype(auto) get(Parent& parent, std::size_t i) { return (parent[i].second); }
+    static constexpr decltype(auto) get(Parent& parent, std::size_t i) {
+        return (parent[i].second);
+    }
 };
 
 void check_projected_iterator() {
     std::array<std::pair<int, std::string>, 3> values{{{0, "ccc"}, {1, "a"}, {2, "bb"}}};
     using iterator = kk::_detail::indexed_iterator<decltype(values), select_second>;
     using const_iterator = kk::_detail::indexed_iterator<const decltype(values), select_second>;
-    static_assert(std::random_access_iterator<iterator> && std::random_access_iterator<const_iterator>);
+    static_assert(
+        std::random_access_iterator<iterator> && std::random_access_iterator<const_iterator>);
     static_assert(std::same_as<std::iter_value_t<iterator>, std::string>);
     static_assert(std::same_as<std::iter_reference_t<const_iterator>, const std::string&>);
     iterator first{&values, 0}, last{&values, 3};
@@ -32,7 +35,8 @@ static_assert(!temporary_columns<kk::soa<int>>);
 struct deque_layout {
     static constexpr bool resizable = true;
     static constexpr std::size_t max_size = 64;
-    template<typename T> using column = std::deque<T>;
+    template<typename T>
+    using column = std::deque<T>;
 };
 
 template<typename Values>
@@ -41,7 +45,8 @@ void check_rows() {
     static_assert(std::random_access_iterator<typename Values::iterator>);
     static_assert(std::random_access_iterator<typename Values::const_iterator>);
     static_assert(std::ranges::random_access_range<Values>);
-    static_assert(std::same_as<decltype(std::as_const(values).template column<0>()), std::span<const int>>);
+    static_assert(
+        std::same_as<decltype(std::as_const(values).template column<0>()), std::span<const int>>);
     values.reserve(4);
     values.push_back(1, std::string("first"));
     values.push_back(typename Values::value_type{2, "second"});
@@ -70,7 +75,11 @@ void check_rows() {
     check(copied.empty() && copied.template get<0>().empty());
     copied.push_back(42, "reused");
     check(copied.size() == 1 && moved.template get<0>()[0] == 99);
-    try { (void) values.at(2); std::abort(); } catch (const std::out_of_range&) {}
+    try {
+        (void)values.at(2);
+        std::abort();
+    } catch (const std::out_of_range&) {
+    }
     values.clear();
     check(values.empty() && values.template get<1>().empty());
 }
@@ -79,20 +88,19 @@ void check_aliasing() {
     kk::soa<std::string, std::string> values;
     const std::string a(256, 'a'), b(256, 'b');
     values.push_back(a, b);
-    while (values.size() < values.capacity()) values.push_back(a, b);
+    while (values.size() < values.capacity())
+        values.push_back(a, b);
     values.push_back(values.template get<1>()[0], values.template get<0>()[0]);
     check(values.read(values.size() - 1) == std::tuple{b, a});
     values.write(0, values.read(values.size() - 1));
     check(values.read(0) == std::tuple{b, a});
-
-
 }
 
 void check_limits() {
     kk::fixed_soa<2, int> fixed;
     fixed.resize(2);
-    try { fixed.push_back(3); std::abort(); } catch (const std::length_error&) {}
-    try { fixed.resize(3); std::abort(); } catch (const std::length_error&) {}
+    check(fixed.push_back(3).error() == kk::error_code::buffer_over);
+    check(fixed.resize(3).error() == kk::error_code::buffer_over);
     check(fixed.size() == 2);
 }
 
@@ -103,11 +111,26 @@ struct vertex {
     std::array<float, 3> normal{0, 0, 1};
     std::string name = "default";
 };
+
 struct empty_record {};
-struct bit_record { bool active = true; };
+
+struct bit_record {
+    bool active = true;
+};
+
 // ID なしの行では、buffer 用のメタデータ名も通常の列名として使える。
-struct metadata_names { int id = 1; int get = 2; int parent = 3; int index = 4; };
-struct xy { float x = 0; float y = 0; };
+struct metadata_names {
+    int id = 1;
+    int get = 2;
+    int parent = 3;
+    int index = 4;
+};
+
+struct xy {
+    float x = 0;
+    float y = 0;
+};
+
 using xy_values = kk::record_soa<xy, kk::storage::fixed_layout<1024>>;
 
 // 列・行・矢印アクセスの実行結果と、最適化時のベクトル化を比較できるようにする。
@@ -118,12 +141,14 @@ extern "C" void update_soa_columns(xy_values& values, float dx, float dy) {
         columns.y[i] += dy;
     }
 }
+
 extern "C" void update_soa_rows(xy_values& values, float dx, float dy) {
     for (auto row : values) {
         row.x += dx;
         row.y += dy;
     }
 }
+
 extern "C" void update_soa_arrows(xy_values& values, float dx, float dy) {
     for (auto it = values.begin(); it != values.end(); ++it) {
         it->x += dx;
@@ -146,7 +171,8 @@ void check_records() {
     const auto& const_values = values;
     static_assert(std::same_as<decltype(const_values.columns().x), std::span<const float>>);
     static_assert(std::same_as<decltype(const_values[0].x), const float&>);
-    static_assert(std::same_as<decltype(const_values.template column<^^vertex::x>()), std::span<const float>>);
+    static_assert(std::same_as<decltype(const_values.template column<^^vertex::x>()),
+        std::span<const float>>);
     check(const_values.begin()->x == 10);
     auto row = values.read(1);
     row.name = "updated";
@@ -157,8 +183,9 @@ void check_records() {
     values.erase_unordered(0);
     check(values[0].name == "default");
 
-    kk::record_buffer<vertex, kk::generator::iota, kk::eventsystem::dummy,
-        kk::storage::dynamic_storage, 8> ids;
+    kk::buffer<vertex, kk::strategy::structure_of_array, kk::storage::dynamic_layout<8>,
+        kk::identity::generated<kk::generator::iota>, kk::eventsystem::dummy>
+        ids;
     check(ids.resize(2).has_value());
     check(ids.begin()->normal[2] == 1 && ids.begin()->name == "default");
     static_assert(std::same_as<decltype(ids.columns().x), std::span<float>>);
@@ -222,6 +249,7 @@ int main() {
     update_soa_columns(positions, 1, 2);
     update_soa_rows(positions, 3, 4);
     update_soa_arrows(positions, 5, 6);
-    for (auto row : positions) check(row.x == 9 && row.y == 12);
+    for (auto row : positions)
+        check(row.x == 9 && row.y == 12);
 #endif
 }

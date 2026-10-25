@@ -31,6 +31,7 @@
 #include <string>
 #include <tuple>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -220,7 +221,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         not_found_id,
         buffer_over,
         generate_id_failed,
-        operation_canceled
+        operation_canceled,
+        duplicate_id
     };
 
     // =============================== generator ===============================
@@ -308,6 +310,28 @@ namespace SAITEKIKUUKAN_NAMESPACE {
     namespace eventsystem {
         // will_* は操作前、did_* は操作完了後の通知を表す。
         namespace event {
+            template<typename... Types>
+            struct will_insert_row_event {
+                const size_t index;
+                std::tuple<Types&...> data;
+
+                will_insert_row_event(size_t index, std::tuple<Types&...> data)
+                    : index(index), data(data) {}
+
+                bool canceled() const { return m_canceled; }
+
+                void cancel() { m_canceled = true; }
+
+            private:
+                bool m_canceled = false;
+            };
+
+            template<typename... Types>
+            struct did_insert_row_event {
+                const size_t index;
+                const std::tuple<Types&...> data;
+            };
+
             template<typename IDType, typename ...Types>
             struct will_insert_event {
             private:
@@ -674,7 +698,12 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
         template<typename... Types>
         struct schema {
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
             static_assert((!is_record<Types> && ...), "record<T> must be the only schema argument");
+#else
+            static_assert((!is_record<Types> && ...),
+                "Struct schemas require C++26 reflection; use type_list<Types...> in C++23");
+#endif
             static constexpr bool named = false;
             using element_types = type_list<Types...>;
             using record_type = void;
@@ -830,25 +859,6 @@ namespace SAITEKIKUUKAN_NAMESPACE {
     // ================================ storage ================================
     // 列ストレージと固定長・可変長の管理
     namespace storage {
-        template<template<typename, size_t, typename...> typename T>
-        concept is_storage = requires(T<size_t, 1, int> t, const T<size_t, 1, int> tc) {
-            T<size_t, 1, int>::default_max_size;
-            T<size_t, 1, int>::max_size;
-            typename T<size_t, 1, int>::id_type;
-            t.ids;
-            t.entries;
-
-            t.resize(std::declval<size_t>());
-            t.push_back(std::declval<size_t>(), std::declval<int>());
-            t.pop_back();
-            t.swap(std::declval<size_t>(), std::declval<size_t>());
-            t.clear();
-
-            tc.size();
-            tc.empty();
-            tc.index(std::declval<size_t>());
-        };
-
         template<typename ...Types>
         struct dynamic_entries_type {
             using result = typename _detail::schema<Types...>::template columns<std::vector>;
@@ -876,6 +886,14 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             static constexpr bool resizable = false;
             static constexpr size_t max_size = Size;
             template<typename T> using column = std::array<T, Size>;
+        };
+
+        template<size_t ChunkSize>
+        struct chunked_layout {
+            static_assert(ChunkSize > 0, "ChunkSize must be positive");
+            static constexpr bool resizable = true;
+            static constexpr size_t max_size = DynamicSizeUnlimited;
+            static constexpr size_t chunk_size = ChunkSize;
         };
 
         // ID やイベントに依存しない低水準の列管理。公開 entries の長さを直接変更しないこと。
@@ -1214,143 +1232,6 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             }
         };
 
-        template<typename Layout, typename IDType, typename... Types>
-        struct identified_storage : basic_columns<Layout, Types...> {
-            using base_type = basic_columns<Layout, Types...>;
-            using id_type = IDType;
-            // buffer が容量 1 の型で既定値を問い合わせる従来の契約を保つ。
-            static constexpr size_t default_max_size =
-                Layout::resizable ? DynamicSizeUnlimited : 1024;
-            static constexpr size_t max_size = Layout::max_size;
-            using id_columns_type = typename Layout::template column<id_type>;
-            id_columns_type ids{};
-
-        private:
-            static auto take_ids(identified_storage& other) noexcept(
-                std::is_nothrow_move_constructible_v<id_columns_type>) -> id_columns_type {
-                if constexpr (std::is_nothrow_move_constructible_v<id_columns_type>) {
-                    return std::move(other.ids);
-                } else {
-                    try {
-                        if constexpr (std::is_copy_constructible_v<id_type>) return other.ids;
-                        else return std::move(other.ids);
-                    } catch (...) {
-                        if constexpr (Layout::resizable) other.ids.clear();
-                        throw;
-                    }
-                }
-            }
-
-        public:
-            identified_storage() = default;
-
-            identified_storage(const identified_storage&) = default;
-
-            identified_storage(identified_storage&& other) noexcept(
-                std::is_nothrow_move_constructible_v<base_type> &&
-                std::is_nothrow_move_constructible_v<decltype(ids)>)
-                : base_type(std::move(other)), ids(take_ids(other)) {
-                if constexpr (Layout::resizable) other.ids.clear();
-            }
-
-            void swap(identified_storage& other) noexcept(
-                base_type::nothrow_swap && std::is_nothrow_swappable_v<decltype(ids)>) {
-                base_type::swap(other);
-                using std::swap;
-                swap(ids, other.ids);
-            }
-
-            identified_storage& operator=(const identified_storage& other)
-                requires std::is_copy_constructible_v<base_type> {
-                if (this != std::addressof(other)) {
-                    identified_storage copy(other);
-                    swap(copy);
-                }
-                return *this;
-            }
-
-            identified_storage& operator=(const identified_storage&)
-                requires (!std::is_copy_constructible_v<base_type>) = delete;
-
-            identified_storage& operator=(identified_storage&& other) noexcept(
-                std::is_nothrow_move_constructible_v<base_type> &&
-                std::is_nothrow_move_constructible_v<decltype(ids)> &&
-                base_type::nothrow_swap && std::is_nothrow_swappable_v<decltype(ids)>) {
-                identified_storage moved(std::move(other));
-                swap(moved);
-                return *this;
-            }
-
-            std::expected<void, error_code> resize(size_t count) {
-                if (count > base_type::max_size()) return std::unexpected{error_code::buffer_over};
-                if constexpr (Layout::resizable) {
-                    auto old_size = this->size();
-                    ids.resize(count);
-                    try { base_type::resize(count); }
-                    catch (...) {
-                        while (ids.size() > old_size) ids.pop_back();
-                        throw;
-                    }
-                } else {
-                    base_type::resize(count);
-                }
-                return {};
-            }
-
-            template<typename... Args>
-            std::expected<void, error_code> push_back(id_type id, Args&&... args) {
-                if (this->size() >= base_type::max_size())
-                    return std::unexpected{error_code::buffer_over};
-                typename base_type::data_tuple values(std::forward<Args>(args)...);
-                if constexpr (Layout::resizable) {
-                    // ID 列から値を渡された場合にも、値を退避してから再確保する。
-                    if (ids.size() == ids.max_size())
-                        return std::unexpected{error_code::buffer_over};
-                    if (ids.size() == ids.capacity())
-                        ids.reserve(ids.size() +
-                                    std::min(ids.max_size() - ids.size(), ids.size() / 2 + 1));
-                    this->append_values(values);
-                    try { ids.push_back(std::move_if_noexcept(id)); }
-                    catch (...) { base_type::pop_back(); throw; }
-                } else {
-                    ids[this->size()] = id;
-                    this->append_values(values);
-                }
-                return {};
-            }
-
-            void pop_back() noexcept {
-                if (this->empty()) return;
-                if constexpr (Layout::resizable) ids.pop_back();
-                base_type::pop_back();
-            }
-
-            void clear() noexcept {
-                if constexpr (Layout::resizable) ids.clear();
-                base_type::clear();
-            }
-
-            std::expected<void, error_code> swap(size_t left, size_t right) {
-                if (left >= this->size() || right >= this->size())
-                    return std::unexpected{error_code::buffer_over};
-                this->swap_rows(left, right);
-                using std::swap;
-                swap(ids[left], ids[right]);
-                return {};
-            }
-
-            std::expected<size_t, error_code> index(id_type id) const {
-                for (size_t i = 0; i < this->size(); ++i) if (ids[i] == id) return i;
-                return std::unexpected{error_code::not_found_id};
-            }
-        };
-
-        template<typename IDType, size_t MaxSize = DynamicSizeUnlimited, typename... Types>
-        using dynamic_storage = identified_storage<dynamic_layout<MaxSize>, IDType, Types...>;
-
-        template<typename IDType, size_t MaxSize = 1024, typename... Types>
-        using static_storage = identified_storage<fixed_layout<MaxSize>, IDType, Types...>;
-
     }
 
     // =============================== iteration ===============================
@@ -1365,7 +1246,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
         template<typename Parent, typename Access = indexed_access>
         class indexed_iterator {
-            template<typename, typename> friend class indexed_iterator;
+            template<typename, typename>
+            friend class indexed_iterator;
             Parent* m_parent = nullptr;
             ptrdiff_t m_index = 0;
 
@@ -1391,7 +1273,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             constexpr indexed_iterator(Parent* parent, difference_type index)
                 : m_parent(parent), m_index(index) {}
 
-            template<typename Other> requires std::is_convertible_v<Other*, Parent*>
+            template<typename Other>
+                requires std::is_convertible_v<Other*, Parent*>
             constexpr indexed_iterator(const indexed_iterator<Other, Access>& other)
                 : m_parent(other.m_parent), m_index(other.m_index) {}
 
@@ -1400,21 +1283,37 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             }
 
             constexpr pointer operator->() const {
-                if constexpr (std::is_lvalue_reference_v<reference>) return std::addressof(**this);
-                else return {**this};
+                if constexpr (std::is_lvalue_reference_v<reference>)
+                    return std::addressof(**this);
+                else
+                    return {**this};
             }
 
             constexpr reference operator[](difference_type offset) const {
                 return *(*this + offset);
             }
 
-            constexpr indexed_iterator& operator++() { ++m_index; return *this; }
+            constexpr indexed_iterator& operator++() {
+                ++m_index;
+                return *this;
+            }
 
-            constexpr indexed_iterator operator++(int) { auto old = *this; ++*this; return old; }
+            constexpr indexed_iterator operator++(int) {
+                auto old = *this;
+                ++*this;
+                return old;
+            }
 
-            constexpr indexed_iterator& operator--() { --m_index; return *this; }
+            constexpr indexed_iterator& operator--() {
+                --m_index;
+                return *this;
+            }
 
-            constexpr indexed_iterator operator--(int) { auto old = *this; --*this; return old; }
+            constexpr indexed_iterator operator--(int) {
+                auto old = *this;
+                --*this;
+                return old;
+            }
 
             constexpr indexed_iterator& operator+=(difference_type offset) {
                 m_index += offset;
@@ -1442,893 +1341,1608 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 return a.m_index - b.m_index;
             }
 
-            friend constexpr bool operator==(const indexed_iterator&,
-                                             const indexed_iterator&) = default;
+            friend constexpr bool operator==(
+                const indexed_iterator&, const indexed_iterator&) = default;
 
-            friend constexpr auto operator<=>(const indexed_iterator&,
-                                              const indexed_iterator&) = default;
+            friend constexpr auto operator<=>(
+                const indexed_iterator&, const indexed_iterator&) = default;
         };
 
         template<typename Access, typename Parent>
         auto indexed_range(Parent& parent, size_t count) {
             using iterator = indexed_iterator<Parent, Access>;
-            return std::ranges::subrange(
-                iterator{std::addressof(parent), 0},
+            return std::ranges::subrange(iterator{std::addressof(parent), 0},
                 iterator{std::addressof(parent), static_cast<ptrdiff_t>(count)});
         }
-    }
 
-    // ================================== soa ==================================
-    // 所有列を隠し、行数と列長を一体で管理する ID なしのコンテナ。
-    // 列ビューの要素は更新できるが、ビューから所有列の長さは変更できない。
-    template<typename Layout, typename... Types>
-    class basic_soa {
-        using storage_type = storage::basic_columns<Layout, Types...>;
-        using schema_type = typename storage_type::schema_type;
-        storage_type m_storage;
-
-        template<bool Const>
-        using parent_type = std::conditional_t<Const, const basic_soa, basic_soa>;
-
-    public:
-        using value_type = typename storage_type::value_type;
-        using element_types = typename storage_type::element_types;
-
-        template<bool Const>
-        using basic_iterator = _detail::indexed_iterator<parent_type<Const>>;
-
-        size_t size() const { return m_storage.size(); }
-
-        bool empty() const { return m_storage.empty(); }
-
-        size_t capacity() const { return m_storage.capacity(); }
-
-        size_t max_size() const { return m_storage.max_size(); }
-
-        void reserve(size_t count) { m_storage.reserve(count); }
-
-        void resize(size_t count)
-            requires std::default_initializable<value_type>
-        {
-            m_storage.resize(count);
-        }
-
-        void clear() { m_storage.clear(); }
-
-        void pop_back() { m_storage.pop_back(); }
-
-        void push_back(value_type value) { m_storage.push_value(std::move(value)); }
-
-        template<typename... Args> requires (sizeof...(Args) == element_types::size &&
-            !(sizeof...(Args) == 1 && (std::same_as<std::remove_cvref_t<Args>, value_type> && ...)))
-        void push_back(Args&&... args) { m_storage.push_back(std::forward<Args>(args)...); }
-
-        // 参照プロキシは行の値そのものではない。値のコピー・代入は read/write で明示する。
-        auto operator[](size_t index) { return m_storage.row(index); }
-
-        auto operator[](size_t index) const { return m_storage.row(index); }
-
-        auto at(size_t index) {
-            if (index >= size()) throw std::out_of_range("SoA row index");
-            return (*this)[index];
-        }
-
-        auto at(size_t index) const {
-            if (index >= size()) throw std::out_of_range("SoA row index");
-            return (*this)[index];
-        }
-
-        value_type read(size_t index) const requires std::is_copy_constructible_v<value_type> {
-            return m_storage.read(index);
-        }
-
-        void write(size_t index, value_type value) { m_storage.write(index, std::move(value)); }
-
-        void erase_unordered(size_t index) {
-            if (index >= size()) throw std::out_of_range("SoA row index");
-            if (index != size() - 1) m_storage.swap_rows(index, size() - 1);
-            pop_back();
-        }
-
-        void swap(basic_soa& other) noexcept(storage_type::nothrow_swap) {
-            m_storage.swap(other.m_storage);
-        }
-
-        friend void swap(basic_soa& a, basic_soa& b) noexcept(storage_type::nothrow_swap) {
-            a.swap(b);
-        }
-
-        template<size_t N> auto column() & { return m_storage.template column<N>(); }
-
-        template<size_t N> auto column() const & { return m_storage.template column<N>(); }
-
-        template<size_t N> auto column() && = delete;
-
-        template<size_t N> auto column() const && = delete;
-
-        template<size_t N> auto get() & { return column<N>(); }
-
-        template<size_t N> auto get() const & { return column<N>(); }
-
-        template<size_t N> auto get() && = delete;
-
-        template<size_t N> auto get() const && = delete;
-
-        auto columns() & { return m_storage.columns(); }
-
-        auto columns() const & { return m_storage.columns(); }
-
-        auto columns() && = delete;
-
-        auto columns() const && = delete;
-
-#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
-        template<std::meta::info Member> auto column() & {
-            return column<schema_type::template member_index<Member>()>();
-        }
-
-        template<std::meta::info Member> auto column() const & {
-            return column<schema_type::template member_index<Member>()>();
-        }
-
-        template<std::meta::info Member> auto column() && = delete;
-
-        template<std::meta::info Member> auto column() const && = delete;
-#endif
-
-        using iterator = basic_iterator<false>;
-        using const_iterator = basic_iterator<true>;
-
-        iterator begin() { return {this, 0}; }
-
-        iterator end() { return {this, static_cast<ptrdiff_t>(size())}; }
-
-        const_iterator begin() const { return {this, 0}; }
-
-        const_iterator end() const { return {this, static_cast<ptrdiff_t>(size())}; }
-
-        const_iterator cbegin() const { return begin(); }
-
-        const_iterator cend() const { return end(); }
-    };
-
-    template<typename... Types>
-    using soa = basic_soa<storage::dynamic_layout<>, Types...>;
-    template<size_t Size, typename... Types>
-    using fixed_soa = basic_soa<storage::fixed_layout<Size>, Types...>;
-#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
-    template<typename Record, typename Layout = storage::dynamic_layout<>>
-    using record_soa = basic_soa<Layout, record<Record>>;
-#endif
-
-    // ================================ chunked ================================
-    // 固定長 SoA をブロックとして保持する。ポインタ表の拡張で既存のチャンクは移動しない。
-    template<size_t ChunkSize, typename... Types>
-    class chunked_soa {
-        static_assert(ChunkSize > 0 &&
-                          ChunkSize <= static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max()),
-            "ChunkSize must be positive and fit ptrdiff_t");
-        using schema_type = _detail::schema<Types...>;
-
-    public:
-        static constexpr size_t chunk_size = ChunkSize;
-        using chunk_type = fixed_soa<ChunkSize, Types...>;
-        using value_type = typename chunk_type::value_type;
-        using element_types = typename chunk_type::element_types;
-
-    private:
-        using data_tuple = typename element_types::template apply<std::tuple>;
-        std::vector<std::unique_ptr<chunk_type>> m_chunks;
-        size_t m_size = 0;
-
-        static constexpr size_t required_chunks(size_t count) noexcept {
-            return count / ChunkSize + (count % ChunkSize != 0);
-        }
-
-        // unique_ptr 自体の const 性は参照先に伝わらないため、ここで const を付ける。
-        chunk_type& chunk_for_row(size_t index) {
-            return *m_chunks[index / ChunkSize];
-        }
-
-        const chunk_type& chunk_for_row(size_t index) const {
-            return *m_chunks[index / ChunkSize];
-        }
-
-        void check_row_index(size_t index) const {
-            if (index >= size()) throw std::out_of_range("Chunked SoA row index");
-        }
-
-        void check_chunk_index(size_t index) const {
-            if (index >= chunk_count()) throw std::out_of_range("Chunk index");
-        }
-
-        void append_chunk() {
-            if (size() == max_size()) throw std::length_error("Chunked SoA exceeds max_size");
-            m_chunks.push_back(std::make_unique<chunk_type>());
-        }
-
-        void insert(data_tuple& values) {
-            if (size() == capacity()) [[unlikely]] append_chunk();
-            std::apply([&](auto&&... fields) {
-                chunk_for_row(m_size).push_back(std::forward<decltype(fields)>(fields)...);
-            }, std::move(values));
-            ++m_size;
-        }
-
-        void truncate(size_t count) noexcept {
-            auto remaining = required_chunks(count);
-            for (size_t i = remaining; i < chunk_count(); ++i) m_chunks[i]->clear();
-            if (remaining) {
-                auto& tail = *m_chunks[remaining - 1];
-                auto tail_size = count - (remaining - 1) * ChunkSize;
-                while (tail.size() > tail_size) tail.pop_back();
-            }
-            m_size = count;
-        }
-
-        template<size_t Column> decltype(auto) column_at(size_t index) {
-            return chunk_for_row(index).template column<Column>()[index % ChunkSize];
-        }
-
-        template<size_t Column> decltype(auto) column_at(size_t index) const {
-            return chunk_for_row(index).template column<Column>()[index % ChunkSize];
-        }
-
-        void swap_rows(size_t left, size_t right) {
-            [&]<size_t... Indices>(std::index_sequence<Indices...>) {
-                (std::ranges::swap(column_at<Indices>(left), column_at<Indices>(right)), ...);
-            }(std::make_index_sequence<element_types::size>{});
-        }
-
-        template<size_t Column>
-        struct column_access {
-            template<typename Parent>
-            static decltype(auto) get(Parent& parent, size_t index) {
-                return parent.template column_at<Column>(index);
-            }
-        };
-
-        struct chunk_access {
-            template<typename Parent>
-            static auto get(Parent& parent, size_t index) { return parent.chunk(index); }
-        };
-
-    public:
-        // 要素の更新だけを許可し、個別チャンクの resize による行数の不一致を防ぐ。
-        template<bool Const>
-        class basic_chunk_view {
-            friend class chunked_soa;
-            using parent_type = std::conditional_t<Const, const chunk_type, chunk_type>;
-            parent_type* m_chunk;
-
-            explicit basic_chunk_view(parent_type* chunk) : m_chunk(chunk) {}
+        // ================================== soa ==================================
+        // 所有列を隠し、行数と列長を一体で管理する ID なしのコンテナ。
+        // 列ビューの要素は更新できるが、ビューから所有列の長さは変更できない。
+        template<typename Layout, typename... Types>
+        class soa_buffer {
+            using storage_type = storage::basic_columns<Layout, Types...>;
+            using schema_type = typename storage_type::schema_type;
+            storage_type m_storage;
+
+            template<bool Const>
+            using parent_type = std::conditional_t<Const, const soa_buffer, soa_buffer>;
 
         public:
-            size_t size() const { return m_chunk->size(); }
+            using value_type = typename storage_type::value_type;
+            using element_types = typename storage_type::element_types;
 
-            bool empty() const { return m_chunk->empty(); }
+            template<bool Const>
+            using basic_iterator = _detail::indexed_iterator<parent_type<Const>>;
 
-            static constexpr size_t capacity() { return ChunkSize; }
+            size_t size() const { return m_storage.size(); }
 
-            auto columns() const { return m_chunk->columns(); }
+            bool empty() const { return m_storage.empty(); }
 
-            template<size_t Column>
-            auto column() const {
-                return m_chunk->template column<Column>();
+            size_t capacity() const { return m_storage.capacity(); }
+
+            size_t max_size() const { return m_storage.max_size(); }
+
+            void reserve(size_t count) { m_storage.reserve(count); }
+
+            void resize(size_t count)
+                requires std::default_initializable<value_type>
+            {
+                m_storage.resize(count);
             }
+
+            void clear() { m_storage.clear(); }
+
+            void pop_back() { m_storage.pop_back(); }
+
+            void push_back(value_type value) { m_storage.push_value(std::move(value)); }
+
+            template<typename... Args>
+                requires(sizeof...(Args) == element_types::size &&
+                         !(sizeof...(Args) == 1 &&
+                             (std::same_as<std::remove_cvref_t<Args>, value_type> && ...)))
+            void push_back(Args&&... args) {
+                m_storage.push_back(std::forward<Args>(args)...);
+            }
+
+            // 参照プロキシは行の値そのものではない。値のコピー・代入は read/write で明示する。
+            auto operator[](size_t index) { return m_storage.row(index); }
+
+            auto operator[](size_t index) const { return m_storage.row(index); }
+
+            auto at(size_t index) {
+                if (index >= size())
+                    throw std::out_of_range("SoA row index");
+                return (*this)[index];
+            }
+
+            auto at(size_t index) const {
+                if (index >= size())
+                    throw std::out_of_range("SoA row index");
+                return (*this)[index];
+            }
+
+            value_type read(size_t index) const
+                requires std::is_copy_constructible_v<value_type>
+            {
+                return m_storage.read(index);
+            }
+
+            void write(size_t index, value_type value) { m_storage.write(index, std::move(value)); }
+
+            void erase_unordered(size_t index) {
+                if (index >= size())
+                    throw std::out_of_range("SoA row index");
+                if (index != size() - 1)
+                    m_storage.swap_rows(index, size() - 1);
+                pop_back();
+            }
+
+            void swap(soa_buffer& other) noexcept(storage_type::nothrow_swap) {
+                m_storage.swap(other.m_storage);
+            }
+
+            friend void swap(soa_buffer& a, soa_buffer& b) noexcept(storage_type::nothrow_swap) {
+                a.swap(b);
+            }
+
+            template<size_t N>
+            auto column() & {
+                return m_storage.template column<N>();
+            }
+
+            template<size_t N>
+            auto column() const& {
+                return m_storage.template column<N>();
+            }
+
+            template<size_t N>
+            auto column() && = delete;
+
+            template<size_t N>
+            auto column() const&& = delete;
+
+            template<size_t N>
+            auto get() & {
+                return column<N>();
+            }
+
+            template<size_t N>
+            auto get() const& {
+                return column<N>();
+            }
+
+            template<size_t N>
+            auto get() && = delete;
+
+            template<size_t N>
+            auto get() const&& = delete;
+
+            auto columns() & { return m_storage.columns(); }
+
+            auto columns() const& { return m_storage.columns(); }
+
+            auto columns() && = delete;
+
+            auto columns() const&& = delete;
+
 #if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
             template<std::meta::info Member>
-            auto column() const {
-                return m_chunk->template column<Member>();
+            auto column() & {
+                return column<schema_type::template member_index<Member>()>();
             }
+
+            template<std::meta::info Member>
+            auto column() const& {
+                return column<schema_type::template member_index<Member>()>();
+            }
+
+            template<std::meta::info Member>
+            auto column() && = delete;
+
+            template<std::meta::info Member>
+            auto column() const&& = delete;
 #endif
-            template<size_t N> auto get() const { return column<N>(); }
 
-            auto operator[](size_t index) const { return (*m_chunk)[index]; }
+            using iterator = basic_iterator<false>;
+            using const_iterator = basic_iterator<true>;
 
-            auto at(size_t index) const { return m_chunk->at(index); }
+            iterator begin() { return {this, 0}; }
 
-            value_type read(size_t index) const requires std::is_copy_constructible_v<value_type> {
-                return m_chunk->read(index);
-            }
+            iterator end() { return {this, static_cast<ptrdiff_t>(size())}; }
 
-            void write(size_t index, value_type value) const requires (!Const) {
-                m_chunk->write(index, std::move(value));
-            }
+            const_iterator begin() const { return {this, 0}; }
 
-            auto begin() const { return m_chunk->begin(); }
+            const_iterator end() const { return {this, static_cast<ptrdiff_t>(size())}; }
 
-            auto end() const { return m_chunk->end(); }
+            const_iterator cbegin() const { return begin(); }
+
+            const_iterator cend() const { return end(); }
         };
 
-        using chunk_view = basic_chunk_view<false>;
-        using const_chunk_view = basic_chunk_view<true>;
-
-        // ========================== ownership ===========================
-        chunked_soa() = default;
-
-        chunked_soa(const chunked_soa& other) requires std::is_copy_constructible_v<chunk_type>
-            : m_size(other.m_size) {
-            m_chunks.reserve(other.m_chunks.size());
-            for (const auto& chunk : other.m_chunks)
-                m_chunks.push_back(std::make_unique<chunk_type>(std::as_const(*chunk)));
-        }
-
-        chunked_soa(const chunked_soa&)
-            requires (!std::is_copy_constructible_v<chunk_type>) = delete;
-
-        chunked_soa(chunked_soa&& other) noexcept
-            : m_chunks(std::move(other.m_chunks)), m_size(std::exchange(other.m_size, 0)) {
-            other.m_chunks.clear();
-        }
-
-        chunked_soa& operator=(const chunked_soa& other)
-            requires std::is_copy_constructible_v<chunk_type>
-        {
-            if (this != std::addressof(other)) {
-                chunked_soa copy(other);
-                swap(copy);
-            }
-            return *this;
-        }
-
-        chunked_soa& operator=(const chunked_soa&)
-            requires (!std::is_copy_constructible_v<chunk_type>) = delete;
-
-        chunked_soa& operator=(chunked_soa&& other) noexcept {
-            if (this != std::addressof(other)) {
-                m_chunks = std::move(other.m_chunks);
-                m_size = std::exchange(other.m_size, 0);
-                other.m_chunks.clear();
-            }
-            return *this;
-        }
-
-        void swap(chunked_soa& other) noexcept {
-            m_chunks.swap(other.m_chunks);
-            std::swap(m_size, other.m_size);
-        }
-
-        friend void swap(chunked_soa& left, chunked_soa& right) noexcept { left.swap(right); }
-
-        // =========================== capacity ===========================
-        size_t size() const noexcept { return m_size; }
-
-        bool empty() const noexcept { return size() == 0; }
-
-        size_t chunk_count() const noexcept { return required_chunks(size()); }
-
-        size_t max_size() const noexcept {
-            auto limit = static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max());
-            return m_chunks.max_size() < required_chunks(limit)
-                ? m_chunks.max_size() * ChunkSize
-                : limit;
-        }
-
-        size_t capacity() const noexcept {
-            auto limit = max_size();
-            return m_chunks.size() > limit / ChunkSize ? limit : m_chunks.size() * ChunkSize;
-        }
-
-        void reserve(size_t count) {
-            if (count > max_size())
-                throw std::length_error("Chunked SoA capacity exceeds max_size");
-            auto desired = required_chunks(count);
-            m_chunks.reserve(desired);
-            while (m_chunks.size() < desired) m_chunks.push_back(std::make_unique<chunk_type>());
-        }
-
-        void resize(size_t count) requires std::default_initializable<value_type> {
-            if (count <= size()) {
-                truncate(count);
-                return;
-            }
-            reserve(count);
-            auto old_size = size();
-            try {
-                while (size() < count) {
-                    auto index = size() / ChunkSize;
-                    auto& chunk = *m_chunks[index];
-                    auto previous = chunk.size();
-                    auto desired = std::min(ChunkSize, count - index * ChunkSize);
-                    chunk.resize(desired);
-                    m_size += desired - previous;
-                }
-            } catch (...) {
-                truncate(old_size);
-                throw;
-            }
-        }
-
-        void clear() noexcept { truncate(0); }
-
-        void pop_back() noexcept {
-            if (empty()) return;
-            chunk_for_row(m_size - 1).pop_back();
-            --m_size;
-        }
-
-        void shrink_to_fit() {
-            while (m_chunks.size() > chunk_count()) m_chunks.pop_back();
-            m_chunks.shrink_to_fit();
-        }
-
-        // ============================= rows =============================
-        void push_back(value_type value) {
-            schema_type::apply_value(std::move(value), [&](auto&&... fields) {
-                push_back(std::forward<decltype(fields)>(fields)...);
-            });
-        }
-
-        template<typename... Args> requires (sizeof...(Args) == element_types::size &&
-            !(sizeof...(Args) == 1 && (std::same_as<std::remove_cvref_t<Args>, value_type> && ...)))
-        void push_back(Args&&... args) {
-            data_tuple values(std::forward<Args>(args)...);
-            insert(values);
-        }
-
-        auto operator[](size_t index) { return chunk_for_row(index)[index % ChunkSize]; }
-
-        auto operator[](size_t index) const { return chunk_for_row(index)[index % ChunkSize]; }
-
-        auto at(size_t index) {
-            check_row_index(index);
-            return (*this)[index];
-        }
-
-        auto at(size_t index) const {
-            check_row_index(index);
-            return (*this)[index];
-        }
-
-        value_type read(size_t index) const requires std::is_copy_constructible_v<value_type> {
-            check_row_index(index);
-            return chunk_for_row(index).read(index % ChunkSize);
-        }
-
-        void write(size_t index, value_type value) {
-            check_row_index(index);
-            chunk_for_row(index).write(index % ChunkSize, std::move(value));
-        }
-
-        void erase_unordered(size_t index) {
-            check_row_index(index);
-            auto last = size() - 1;
-            if (index != last) swap_rows(index, last);
-            pop_back();
-        }
-
-        // ============================= views ============================
-        chunk_view chunk(size_t index) & {
-            check_chunk_index(index);
-            return chunk_view(m_chunks[index].get());
-        }
-
-        const_chunk_view chunk(size_t index) const & {
-            check_chunk_index(index);
-            return const_chunk_view(m_chunks[index].get());
-        }
-
-        chunk_view chunk(size_t) && = delete;
-
-        const_chunk_view chunk(size_t) const && = delete;
-
-        auto chunks() & {
-            return _detail::indexed_range<chunk_access>(*this, chunk_count());
-        }
-
-        auto chunks() const & {
-            return _detail::indexed_range<chunk_access>(*this, chunk_count());
-        }
-
-        auto chunks() && = delete;
-
-        auto chunks() const && = delete;
-
-        template<size_t Column> auto column() & {
-            return _detail::indexed_range<column_access<Column>>(*this, size());
-        }
-
-        template<size_t Column> auto column() const & {
-            return _detail::indexed_range<column_access<Column>>(*this, size());
-        }
-
-        template<size_t Column> auto column() && = delete;
-
-        template<size_t Column> auto column() const && = delete;
-#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
-        template<std::meta::info Member>
-        auto column() & {
-            return column<schema_type::template member_index<Member>()>();
-        }
-
-        template<std::meta::info Member>
-        auto column() const & {
-            return column<schema_type::template member_index<Member>()>();
-        }
-
-        template<std::meta::info Member> auto column() && = delete;
-
-        template<std::meta::info Member> auto column() const && = delete;
-#endif
-        template<size_t N> auto get() & { return column<N>(); }
-
-        template<size_t N> auto get() const & { return column<N>(); }
-
-        template<size_t N> auto get() && = delete;
-
-        template<size_t N> auto get() const && = delete;
-
-        using iterator = _detail::indexed_iterator<chunked_soa>;
-        using const_iterator = _detail::indexed_iterator<const chunked_soa>;
-
-        iterator begin() { return {this, 0}; }
-
-        iterator end() { return {this, static_cast<ptrdiff_t>(size())}; }
-
-        const_iterator begin() const { return {this, 0}; }
-
-        const_iterator end() const { return {this, static_cast<ptrdiff_t>(size())}; }
-
-        const_iterator cbegin() const { return begin(); }
-
-        const_iterator cend() const { return end(); }
-    };
-
-#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
-    template<typename Record, size_t ChunkSize = 128>
-    using record_chunked_soa = chunked_soa<ChunkSize, record<Record>>;
-#endif
-
-
-    // ================================= buffer ================================
-    // ID・イベント・有効行数を管理する共通の buffer
-    template<generator::is_generator IDGenerator = generator::iota,
-            eventsystem::is_eventsystem EventSystem = eventsystem::dummy,
-            template<typename, size_t, typename...> typename Storage = storage::static_storage,
-            size_t MaxSize = Storage<size_t, 1, int>::default_max_size,
-            typename... Types> requires storage::is_storage<Storage>
-    struct buffer {
-        using this_type = buffer<IDGenerator, EventSystem, Storage, MaxSize, Types...>;
-        using schema_type = _detail::schema<Types...>;
-        static_assert([] { schema_type::validate_buffer_names(); return true; }());
-        using element_types = typename schema_type::element_types;
-        using id_type = typename IDGenerator::generate_type;
-        using storage_type = Storage<id_type, MaxSize, Types...>;
-        using columns_type = decltype(std::declval<storage_type&>().entries);
-        static constexpr size_t max_size = MaxSize;
-
-        template<bool Const>
-        using parent_type = std::conditional_t<Const, const this_type, this_type>;
-
-        template<bool Const>
-        using fields_type = typename schema_type::template fields<
-            std::conditional_t<Const, const columns_type, columns_type>>;
-
-        // 型パック形式では空の基底、record 形式では同名メンバへの参照を継承する。
-        template<bool Const>
-        struct basic_entry : fields_type<Const> {
-            parent_type<Const>* parent;
-            size_t index;
-
-            basic_entry(parent_type<Const>* parent, size_t index)
-                : fields_type<Const>(schema_type::row(parent->storage.entries, index)),
-                  parent(parent), index(index) {}
-
-            id_type id() const { return parent->storage.ids[index]; }
-
-            template<size_t N>
-            decltype(auto) get() { return parent->template get<N>()[index]; }
-
-            template<size_t N>
-            decltype(auto) get() const { return std::as_const(*parent).template get<N>()[index]; }
-        };
-
-        using entry = basic_entry<false>;
-        using const_entry = basic_entry<true>;
-
-        // const 性だけを切り替え、通常・const イテレータで同じ操作を共有する。
-        template<bool Const>
-        class basic_iterator {
-            template<bool> friend class basic_iterator;
-            parent_type<Const>* m_parent = nullptr;
-            ptrdiff_t m_index = 0;
+        // ================================ chunked ================================
+        // 固定長 SoA をブロックとして保持する。ポインタ表の拡張で既存のチャンクは移動しない。
+        template<size_t ChunkSize, typename... Types>
+        class chunked_buffer {
+            static_assert(ChunkSize > 0 && ChunkSize <= static_cast<size_t>(
+                                                            std::numeric_limits<ptrdiff_t>::max()),
+                "ChunkSize must be positive and fit ptrdiff_t");
+            using schema_type = _detail::schema<Types...>;
 
         public:
-            using iterator_concept = std::random_access_iterator_tag;
-            using iterator_category = std::conditional_t<schema_type::named,
-                std::input_iterator_tag, std::random_access_iterator_tag>;
-            using value_type = basic_entry<Const>;
-            using difference_type = ptrdiff_t;
-            using reference = value_type;
+            static constexpr size_t chunk_size = ChunkSize;
+            using chunk_type = soa_buffer<storage::fixed_layout<ChunkSize>, Types...>;
+            using value_type = typename chunk_type::value_type;
+            using element_types = typename chunk_type::element_types;
 
-            struct pointer {
-                reference row;
+        private:
+            using data_tuple = typename element_types::template apply<std::tuple>;
+            std::vector<std::unique_ptr<chunk_type>> m_chunks;
+            size_t m_size = 0;
 
-                reference* operator->() { return std::addressof(row); }
+            static constexpr size_t required_chunks(size_t count) noexcept {
+                return count / ChunkSize + (count % ChunkSize != 0);
+            }
 
-                const reference* operator->() const { return std::addressof(row); }
+            // unique_ptr 自体の const 性は参照先に伝わらないため、ここで const を付ける。
+            chunk_type& chunk_for_row(size_t index) { return *m_chunks[index / ChunkSize]; }
+
+            const chunk_type& chunk_for_row(size_t index) const {
+                return *m_chunks[index / ChunkSize];
+            }
+
+            void check_row_index(size_t index) const {
+                if (index >= size())
+                    throw std::out_of_range("Chunked SoA row index");
+            }
+
+            void check_chunk_index(size_t index) const {
+                if (index >= chunk_count())
+                    throw std::out_of_range("Chunk index");
+            }
+
+            void append_chunk() {
+                if (size() == max_size())
+                    throw std::length_error("Chunked SoA exceeds max_size");
+                m_chunks.push_back(std::make_unique<chunk_type>());
+            }
+
+            void insert(data_tuple& values) {
+                if (size() == capacity()) [[unlikely]]
+                    append_chunk();
+                std::apply(
+                    [&](auto&&... fields) {
+                        chunk_for_row(m_size).push_back(std::forward<decltype(fields)>(fields)...);
+                    },
+                    std::move(values));
+                ++m_size;
+            }
+
+            void truncate(size_t count) noexcept {
+                auto remaining = required_chunks(count);
+                for (size_t i = remaining; i < chunk_count(); ++i)
+                    m_chunks[i]->clear();
+                if (remaining) {
+                    auto& tail = *m_chunks[remaining - 1];
+                    auto tail_size = count - (remaining - 1) * ChunkSize;
+                    while (tail.size() > tail_size)
+                        tail.pop_back();
+                }
+                m_size = count;
+            }
+
+            template<size_t Column>
+            decltype(auto) column_at(size_t index) {
+                return chunk_for_row(index).template column<Column>()[index % ChunkSize];
+            }
+
+            template<size_t Column>
+            decltype(auto) column_at(size_t index) const {
+                return chunk_for_row(index).template column<Column>()[index % ChunkSize];
+            }
+
+            void swap_rows(size_t left, size_t right) {
+                [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                    (std::ranges::swap(column_at<Indices>(left), column_at<Indices>(right)), ...);
+                }(std::make_index_sequence<element_types::size>{});
+            }
+
+            template<size_t Column>
+            struct column_access {
+                template<typename Parent>
+                static decltype(auto) get(Parent& parent, size_t index) {
+                    return parent.template column_at<Column>(index);
+                }
             };
 
-            basic_iterator() = default;
+            struct chunk_access {
+                template<typename Parent>
+                static auto get(Parent& parent, size_t index) {
+                    return parent.chunk(index);
+                }
+            };
 
-            basic_iterator(parent_type<Const>* parent, difference_type index)
-                : m_parent(parent), m_index(index) {}
+        public:
+            // 要素の更新だけを許可し、個別チャンクの resize による行数の不一致を防ぐ。
+            template<bool Const>
+            class basic_chunk_view {
+                friend class chunked_buffer;
+                using parent_type = std::conditional_t<Const, const chunk_type, chunk_type>;
+                parent_type* m_chunk;
 
-            template<bool Other> requires (Const && !Other)
-            basic_iterator(const basic_iterator<Other>& other)
-                : m_parent(other.m_parent), m_index(other.m_index) {}
+                explicit basic_chunk_view(parent_type* chunk) : m_chunk(chunk) {}
 
-            reference operator*() const { return {m_parent, static_cast<size_t>(m_index)}; }
+            public:
+                size_t size() const { return m_chunk->size(); }
 
-            pointer operator->() const { return {**this}; }
+                bool empty() const { return m_chunk->empty(); }
 
-            reference operator[](difference_type offset) const { return *(*this + offset); }
+                static constexpr size_t capacity() { return ChunkSize; }
 
-            basic_iterator& operator++() { ++m_index; return *this; }
+                auto columns() const { return m_chunk->columns(); }
 
-            basic_iterator operator++(int) { auto old = *this; ++*this; return old; }
+                template<size_t Column>
+                auto column() const {
+                    return m_chunk->template column<Column>();
+                }
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+                template<std::meta::info Member>
+                auto column() const {
+                    return m_chunk->template column<Member>();
+                }
+#endif
+                template<size_t N>
+                auto get() const {
+                    return column<N>();
+                }
 
-            basic_iterator& operator--() { --m_index; return *this; }
+                auto operator[](size_t index) const { return (*m_chunk)[index]; }
 
-            basic_iterator operator--(int) { auto old = *this; --*this; return old; }
+                auto at(size_t index) const { return m_chunk->at(index); }
 
-            basic_iterator& operator+=(difference_type offset) { m_index += offset; return *this; }
+                value_type read(size_t index) const
+                    requires std::is_copy_constructible_v<value_type>
+                {
+                    return m_chunk->read(index);
+                }
 
-            basic_iterator& operator-=(difference_type offset) { m_index -= offset; return *this; }
+                void write(size_t index, value_type value) const
+                    requires(!Const)
+                {
+                    m_chunk->write(index, std::move(value));
+                }
 
-            explicit operator bool() const {
-                return m_parent && m_index >= 0 && static_cast<size_t>(m_index) <= m_parent->size();
+                auto begin() const { return m_chunk->begin(); }
+
+                auto end() const { return m_chunk->end(); }
+            };
+
+            using chunk_view = basic_chunk_view<false>;
+            using const_chunk_view = basic_chunk_view<true>;
+
+            // ========================== ownership ===========================
+            chunked_buffer() = default;
+
+            chunked_buffer(const chunked_buffer& other)
+                requires std::is_copy_constructible_v<chunk_type>
+                : m_size(other.m_size) {
+                m_chunks.reserve(other.m_chunks.size());
+                for (const auto& chunk : other.m_chunks)
+                    m_chunks.push_back(std::make_unique<chunk_type>(std::as_const(*chunk)));
             }
 
-            bool operator!() const { return !static_cast<bool>(*this); }
+            chunked_buffer(const chunked_buffer&)
+                requires(!std::is_copy_constructible_v<chunk_type>)
+            = delete;
 
-            friend basic_iterator operator+(basic_iterator it, difference_type offset) {
-                return it += offset;
+            chunked_buffer(chunked_buffer&& other) noexcept
+                : m_chunks(std::move(other.m_chunks)), m_size(std::exchange(other.m_size, 0)) {
+                other.m_chunks.clear();
             }
 
-            friend basic_iterator operator+(difference_type offset, basic_iterator it) {
-                return it += offset;
+            chunked_buffer& operator=(const chunked_buffer& other)
+                requires std::is_copy_constructible_v<chunk_type>
+            {
+                if (this != std::addressof(other)) {
+                    chunked_buffer copy(other);
+                    swap(copy);
+                }
+                return *this;
             }
 
-            friend basic_iterator operator-(basic_iterator it, difference_type offset) {
-                return it -= offset;
+            chunked_buffer& operator=(const chunked_buffer&)
+                requires(!std::is_copy_constructible_v<chunk_type>)
+            = delete;
+
+            chunked_buffer& operator=(chunked_buffer&& other) noexcept {
+                if (this != std::addressof(other)) {
+                    m_chunks = std::move(other.m_chunks);
+                    m_size = std::exchange(other.m_size, 0);
+                    other.m_chunks.clear();
+                }
+                return *this;
             }
 
-            friend difference_type operator-(basic_iterator left, basic_iterator right) {
-                return left.m_index - right.m_index;
+            void swap(chunked_buffer& other) noexcept {
+                m_chunks.swap(other.m_chunks);
+                std::swap(m_size, other.m_size);
             }
 
-            friend bool operator==(const basic_iterator&, const basic_iterator&) = default;
+            friend void swap(chunked_buffer& left, chunked_buffer& right) noexcept {
+                left.swap(right);
+            }
 
-            friend auto operator<=>(const basic_iterator&, const basic_iterator&) = default;
+            // =========================== capacity ===========================
+            size_t size() const noexcept { return m_size; }
+
+            bool empty() const noexcept { return size() == 0; }
+
+            size_t chunk_count() const noexcept { return required_chunks(size()); }
+
+            size_t max_size() const noexcept {
+                auto limit = static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max());
+                return m_chunks.max_size() < required_chunks(limit)
+                           ? m_chunks.max_size() * ChunkSize
+                           : limit;
+            }
+
+            size_t capacity() const noexcept {
+                auto limit = max_size();
+                return m_chunks.size() > limit / ChunkSize ? limit : m_chunks.size() * ChunkSize;
+            }
+
+            void reserve(size_t count) {
+                if (count > max_size())
+                    throw std::length_error("Chunked SoA capacity exceeds max_size");
+                auto desired = required_chunks(count);
+                m_chunks.reserve(desired);
+                while (m_chunks.size() < desired)
+                    m_chunks.push_back(std::make_unique<chunk_type>());
+            }
+
+            void resize(size_t count)
+                requires std::default_initializable<value_type>
+            {
+                if (count <= size()) {
+                    truncate(count);
+                    return;
+                }
+                reserve(count);
+                auto old_size = size();
+                try {
+                    while (size() < count) {
+                        auto index = size() / ChunkSize;
+                        auto& chunk = *m_chunks[index];
+                        auto previous = chunk.size();
+                        auto desired = std::min(ChunkSize, count - index * ChunkSize);
+                        chunk.resize(desired);
+                        m_size += desired - previous;
+                    }
+                } catch (...) {
+                    truncate(old_size);
+                    throw;
+                }
+            }
+
+            void clear() noexcept { truncate(0); }
+
+            void pop_back() noexcept {
+                if (empty())
+                    return;
+                chunk_for_row(m_size - 1).pop_back();
+                --m_size;
+            }
+
+            void shrink_to_fit() {
+                while (m_chunks.size() > chunk_count())
+                    m_chunks.pop_back();
+                m_chunks.shrink_to_fit();
+            }
+
+            // ============================= rows =============================
+            void push_back(value_type value) {
+                schema_type::apply_value(std::move(value), [&](auto&&... fields) {
+                    push_back(std::forward<decltype(fields)>(fields)...);
+                });
+            }
+
+            template<typename... Args>
+                requires(sizeof...(Args) == element_types::size &&
+                         !(sizeof...(Args) == 1 &&
+                             (std::same_as<std::remove_cvref_t<Args>, value_type> && ...)))
+            void push_back(Args&&... args) {
+                data_tuple values(std::forward<Args>(args)...);
+                insert(values);
+            }
+
+            auto operator[](size_t index) { return chunk_for_row(index)[index % ChunkSize]; }
+
+            auto operator[](size_t index) const { return chunk_for_row(index)[index % ChunkSize]; }
+
+            auto at(size_t index) {
+                check_row_index(index);
+                return (*this)[index];
+            }
+
+            auto at(size_t index) const {
+                check_row_index(index);
+                return (*this)[index];
+            }
+
+            value_type read(size_t index) const
+                requires std::is_copy_constructible_v<value_type>
+            {
+                check_row_index(index);
+                return chunk_for_row(index).read(index % ChunkSize);
+            }
+
+            void write(size_t index, value_type value) {
+                check_row_index(index);
+                chunk_for_row(index).write(index % ChunkSize, std::move(value));
+            }
+
+            void erase_unordered(size_t index) {
+                check_row_index(index);
+                auto last = size() - 1;
+                if (index != last)
+                    swap_rows(index, last);
+                pop_back();
+            }
+
+            // ============================= views ============================
+            chunk_view chunk(size_t index) & {
+                check_chunk_index(index);
+                return chunk_view(m_chunks[index].get());
+            }
+
+            const_chunk_view chunk(size_t index) const& {
+                check_chunk_index(index);
+                return const_chunk_view(m_chunks[index].get());
+            }
+
+            chunk_view chunk(size_t) && = delete;
+
+            const_chunk_view chunk(size_t) const&& = delete;
+
+            auto chunks() & { return _detail::indexed_range<chunk_access>(*this, chunk_count()); }
+
+            auto chunks() const& {
+                return _detail::indexed_range<chunk_access>(*this, chunk_count());
+            }
+
+            auto chunks() && = delete;
+
+            auto chunks() const&& = delete;
+
+            template<size_t Column>
+            auto column() & {
+                return _detail::indexed_range<column_access<Column>>(*this, size());
+            }
+
+            template<size_t Column>
+            auto column() const& {
+                return _detail::indexed_range<column_access<Column>>(*this, size());
+            }
+
+            template<size_t Column>
+            auto column() && = delete;
+
+            template<size_t Column>
+            auto column() const&& = delete;
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+            template<std::meta::info Member>
+            auto column() & {
+                return column<schema_type::template member_index<Member>()>();
+            }
+
+            template<std::meta::info Member>
+            auto column() const& {
+                return column<schema_type::template member_index<Member>()>();
+            }
+
+            template<std::meta::info Member>
+            auto column() && = delete;
+
+            template<std::meta::info Member>
+            auto column() const&& = delete;
+#endif
+            template<size_t N>
+            auto get() & {
+                return column<N>();
+            }
+
+            template<size_t N>
+            auto get() const& {
+                return column<N>();
+            }
+
+            template<size_t N>
+            auto get() && = delete;
+
+            template<size_t N>
+            auto get() const&& = delete;
+
+            using iterator = _detail::indexed_iterator<chunked_buffer>;
+            using const_iterator = _detail::indexed_iterator<const chunked_buffer>;
+
+            iterator begin() { return {this, 0}; }
+
+            iterator end() { return {this, static_cast<ptrdiff_t>(size())}; }
+
+            const_iterator begin() const { return {this, 0}; }
+
+            const_iterator end() const { return {this, static_cast<ptrdiff_t>(size())}; }
+
+            const_iterator cbegin() const { return begin(); }
+
+            const_iterator cend() const { return end(); }
         };
 
-        using iterator = basic_iterator<false>;
-        using const_iterator = basic_iterator<true>;
-
-    private:
-        [[no_unique_address]] IDGenerator m_generator;
-        [[no_unique_address]] EventSystem m_eventsystem;
-        using event_types = typename EventSystem::event_types;
-        using data_tuple = typename element_types::template apply<std::tuple>;
-
-        // 元の型リストを適用して、挿入前後のイベント型を組み立てる。
-        template<typename... Fields>
-        using will_insert = eventsystem::event::will_insert_event<id_type, Fields...>;
-        template<typename... Fields>
-        using did_insert = eventsystem::event::did_insert_event<id_type, Fields...>;
-        using will_insert_type = typename element_types::template apply<will_insert>;
-        using did_insert_type = typename element_types::template apply<did_insert>;
-
-        auto row_references(size_t index) {
-            return [&]<size_t... Indices>(std::index_sequence<Indices...>) {
-                return std::tie(get<Indices>()[index]...);
-            }(std::make_index_sequence<element_types::size>{});
+        // 通常の列は直接参照し、vector<bool> などのプロキシ列だけ値を退避して書き戻す。
+        template<typename Fields, typename Owner, typename Function>
+        void with_row_references(Owner& owner, size_t position, Function&& function) {
+            [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                using references =
+                    std::tuple<std::conditional_t<std::is_lvalue_reference_v<decltype(owner
+                                                          .template column<Indices>()[position])>,
+                        decltype(owner.template column<Indices>()[position]),
+                        typename Fields::template get<Indices>>...>;
+                references values(owner.template column<Indices>()[position]...);
+                auto tied = std::apply([](auto&... fields) { return std::tie(fields...); }, values);
+                function(tied);
+                (
+                    [&] {
+                        if constexpr (!std::is_lvalue_reference_v<
+                                          decltype(owner.template column<Indices>()[position])>)
+                            owner.template column<Indices>()[position] =
+                                std::move(std::get<Indices>(values));
+                    }(),
+                    ...);
+            }(std::make_index_sequence<Fields::size>{});
         }
 
-        template<typename... Args>
-        std::expected<void, error_code> insert_columns(Args&&... args) {
-            static_assert(sizeof...(Args) == element_types::size,
-                          "Incorrect number of column values");
-            if (size() >= max_size)
-                return std::unexpected{error_code::buffer_over};
-            std::optional<id_type> id = m_generator.next();
-            if (!id)
-                return std::unexpected{error_code::generate_id_failed};
+        // ID 管理を列の配置から分離する。
+        template<typename Storage, generator::is_generator Generator,
+            eventsystem::is_eventsystem Events>
+        class identified_buffer {
+            Storage m_storage;
+            [[no_unique_address]] Generator m_generator;
+            [[no_unique_address]] Events m_events;
+            using schema_type = typename Storage::schema_type;
+            using data_tuple = typename Storage::element_types::template apply<std::tuple>;
 
-            constexpr bool observes_will = event_types::template contains<will_insert_type>;
-            constexpr bool observes_did = event_types::template contains<did_insert_type>;
-            if constexpr (!observes_will && !observes_did) {
-                return storage.push_back(*id, std::forward<Args>(args)...);
-            } else {
-                data_tuple data(std::forward<Args>(args)...);
-                if constexpr (observes_will) {
-                    auto references =
-                        std::apply([](auto&... values) { return std::tie(values...); }, data);
-                    will_insert_type event{*id, references};
-                    m_eventsystem.on(event);
-                    if (event.canceled())
-                        return std::unexpected{error_code::operation_canceled};
+        public:
+            using value_type = typename Storage::value_type;
+            using element_types = typename Storage::element_types;
+            using id_type = typename Generator::generate_type;
+            static constexpr bool has_identity = true;
+            static_assert([] {
+                schema_type::validate_buffer_names();
+                return true;
+            }());
+
+            template<bool Const>
+            struct basic_entry : Storage::template field_reference<Const> {
+                using parent_type =
+                    std::conditional_t<Const, const identified_buffer, identified_buffer>;
+                using fields_type = typename Storage::template field_reference<Const>;
+                parent_type* parent;
+                size_t index;
+
+                basic_entry(parent_type* parent, size_t index)
+                    : fields_type(parent->m_storage.fields(index)), parent(parent), index(index) {}
+
+                id_type id() const { return parent->m_storage.ids[index]; }
+
+                template<size_t N>
+                decltype(auto) get() const {
+                    return parent->template column<N>()[index];
                 }
-                auto result = std::apply([&](auto&&... values) {
-                    return storage.push_back(*id, std::forward<decltype(values)>(values)...);
-                }, std::move(data));
+            };
+
+            using entry = basic_entry<false>;
+            using const_entry = basic_entry<true>;
+            template<bool Const>
+            using basic_iterator = indexed_iterator<
+                std::conditional_t<Const, const identified_buffer, identified_buffer>>;
+            using iterator = basic_iterator<false>;
+            using const_iterator = basic_iterator<true>;
+
+            size_t size() const { return m_storage.size(); }
+
+            bool empty() const { return m_storage.empty(); }
+
+            size_t max_size() const { return m_storage.row_limit(); }
+
+            size_t capacity() const { return m_storage.capacity(); }
+
+            void reserve(size_t count) { m_storage.reserve(count); }
+
+            void swap(identified_buffer& other) noexcept(
+                noexcept(m_storage.swap(other.m_storage)) &&
+                std::is_nothrow_swappable_v<Generator> && std::is_nothrow_swappable_v<Events>) {
+                m_storage.swap(other.m_storage);
+                using std::swap;
+                swap(m_generator, other.m_generator);
+                swap(m_events, other.m_events);
+            }
+
+            friend void swap(identified_buffer& a, identified_buffer& b) noexcept(
+                noexcept(a.swap(b))) {
+                a.swap(b);
+            }
+
+            template<size_t N>
+            auto column() & {
+                return m_storage.template column<N>();
+            }
+
+            template<size_t N>
+            auto column() const& {
+                return m_storage.template column<N>();
+            }
+
+            template<size_t N>
+            auto column() && = delete;
+
+            template<size_t N>
+            auto column() const&& = delete;
+
+            template<size_t N>
+            auto get() & {
+                return column<N>();
+            }
+
+            template<size_t N>
+            auto get() const& {
+                return column<N>();
+            }
+
+            template<size_t N>
+            auto get() && = delete;
+
+            template<size_t N>
+            auto get() const&& = delete;
+
+            auto columns() &
+                requires requires { m_storage.columns(); }
+            {
+                return m_storage.columns();
+            }
+
+            auto columns() const&
+                requires requires { m_storage.columns(); }
+            {
+                return m_storage.columns();
+            }
+
+            auto columns() && = delete;
+
+            auto columns() const&& = delete;
+
+            auto chunks() &
+                requires requires { m_storage.chunks(); }
+            {
+                return m_storage.chunks();
+            }
+
+            auto chunks() const&
+                requires requires { m_storage.chunks(); }
+            {
+                return m_storage.chunks();
+            }
+
+            size_t chunk_count() const
+                requires requires { m_storage.chunk_count(); }
+            {
+                return m_storage.chunk_count();
+            }
+
+            auto chunks() && = delete;
+
+            auto chunks() const&& = delete;
+
+            auto chunk(size_t i) &
+                requires requires { m_storage.chunk(i); }
+            {
+                return m_storage.chunk(i);
+            }
+
+            auto chunk(size_t i) const&
+                requires requires { m_storage.chunk(i); }
+            {
+                return m_storage.chunk(i);
+            }
+
+            auto chunk(size_t) && = delete;
+
+            auto chunk(size_t) const&& = delete;
+
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+            template<std::meta::info Member>
+            auto column() & {
+                return column<schema_type::template member_index<Member>()>();
+            }
+
+            template<std::meta::info Member>
+            auto column() const& {
+                return column<schema_type::template member_index<Member>()>();
+            }
+
+            template<std::meta::info Member>
+            auto column() && = delete;
+
+            template<std::meta::info Member>
+            auto column() const&& = delete;
+#endif
+
+            // 添字は常に物理行。ID の検索は find に明示する。
+            entry operator[](size_t index) { return {this, index}; }
+
+            const_entry operator[](size_t index) const { return {this, index}; }
+
+            entry at(size_t index) {
+                if (index >= size())
+                    throw std::out_of_range("Buffer row index");
+                return (*this)[index];
+            }
+
+            const_entry at(size_t index) const {
+                if (index >= size())
+                    throw std::out_of_range("Buffer row index");
+                return (*this)[index];
+            }
+
+            std::expected<size_t, error_code> index(const id_type& id) const {
+                return m_storage.index(id);
+            }
+
+            std::expected<entry, error_code> find(const id_type& id) {
+                auto position = index(id);
+                if (!position)
+                    return std::unexpected{position.error()};
+                return (*this)[*position];
+            }
+
+            std::expected<const_entry, error_code> find(const id_type& id) const {
+                auto position = index(id);
+                if (!position)
+                    return std::unexpected{position.error()};
+                return (*this)[*position];
+            }
+
+            template<size_t N>
+            auto get(const id_type& id) -> std::expected<
+                lookup_value<decltype(std::declval<Storage&>().template column<N>()[size_t{}])>,
+                error_code> {
+                auto position = index(id);
+                if (!position)
+                    return std::unexpected{position.error()};
+                return lookup_reference(column<N>()[*position]);
+            }
+
+            template<size_t N>
+            auto get(const id_type& id) const
+                -> std::expected<lookup_value<decltype(std::declval<const Storage&>()
+                                         .template column<N>()[size_t{}])>,
+                    error_code> {
+                auto position = index(id);
+                if (!position)
+                    return std::unexpected{position.error()};
+                return lookup_reference(column<N>()[*position]);
+            }
+
+            value_type read(size_t i) const
+                requires std::is_copy_constructible_v<value_type>
+            {
+                return m_storage.read(i);
+            }
+
+            void write(size_t i, value_type value) { m_storage.write(i, std::move(value)); }
+
+            Events& events() { return m_events; }
+
+            const Events& events() const { return m_events; }
+
+        private:
+            template<typename... Fields>
+            using before_event = eventsystem::event::will_insert_event<id_type, Fields...>;
+            template<typename... Fields>
+            using after_event = eventsystem::event::did_insert_event<id_type, Fields...>;
+            using before = typename element_types::template apply<before_event>;
+            using after = typename element_types::template apply<after_event>;
+
+            template<typename... Args>
+            std::expected<void, error_code> insert(Args&&... args) {
+                if (size() >= max_size())
+                    return std::unexpected{error_code::buffer_over};
+                auto id = m_generator.next();
+                if (!id)
+                    return std::unexpected{error_code::generate_id_failed};
+                if constexpr (!Events::event_types::template contains<before> &&
+                              !Events::event_types::template contains<after>) {
+                    return m_storage.push_back(std::move(*id), std::forward<Args>(args)...);
+                } else {
+                    data_tuple values(std::forward<Args>(args)...);
+                    if constexpr (Events::event_types::template contains<before>) {
+                        auto references =
+                            std::apply([](auto&... fields) { return std::tie(fields...); }, values);
+                        before event{*id, references};
+                        m_events.on(event);
+                        if (event.canceled())
+                            return std::unexpected{error_code::operation_canceled};
+                    }
+                    auto result = std::apply(
+                        [&](auto&&... fields) {
+                            return m_storage.push_back(
+                                std::move(*id), std::forward<decltype(fields)>(fields)...);
+                        },
+                        std::move(values));
+                    if (!result)
+                        return result;
+                    if constexpr (Events::event_types::template contains<after>) {
+                        with_row_references<element_types>(*this, size() - 1, [&](auto references) {
+                            after event{m_storage.ids[size() - 1], references};
+                            m_events.on(event);
+                        });
+                    }
+                    return {};
+                }
+            }
+
+        public:
+            std::expected<void, error_code> push_back(value_type value) {
+                return schema_type::apply_value(std::move(value), [&](auto&&... fields) {
+                    return insert(std::forward<decltype(fields)>(fields)...);
+                });
+            }
+
+            template<typename... Args>
+                requires(sizeof...(Args) == element_types::size &&
+                         !(sizeof...(Args) == 1 &&
+                             (std::same_as<std::remove_cvref_t<Args>, value_type> && ...)))
+            std::expected<void, error_code> push_back(Args&&... args) {
+                return insert(std::forward<Args>(args)...);
+            }
+
+            std::expected<void, error_code> resize(size_t count)
+                requires std::default_initializable<value_type>
+            {
+                return m_storage.resize_with_generator(count, m_generator);
+            }
+
+            void pop_back() { m_storage.pop_back(); }
+
+            void clear() { m_storage.clear(); }
+
+            void swap_rows(size_t left, size_t right) {
+                auto result = m_storage.swap(left, right);
                 if (!result)
-                    return result;
-                if constexpr (observes_did) {
-                    did_insert_type event{*id, row_references(size() - 1)};
-                    m_eventsystem.on(event);
+                    throw std::out_of_range("Buffer row index");
+            }
+
+            void erase_unordered(size_t index) {
+                if (index >= size())
+                    throw std::out_of_range("Buffer row index");
+                if (index != size() - 1)
+                    swap_rows(index, size() - 1);
+                pop_back();
+            }
+
+            std::expected<void, error_code> erase(const id_type& id) {
+                auto position = index(id);
+                if (!position)
+                    return std::unexpected{position.error()};
+                erase_unordered(*position);
+                return {};
+            }
+
+            iterator begin() { return {this, 0}; }
+
+            iterator end() { return {this, static_cast<ptrdiff_t>(size())}; }
+
+            const_iterator begin() const { return {this, 0}; }
+
+            const_iterator end() const { return {this, static_cast<ptrdiff_t>(size())}; }
+
+            const_iterator cbegin() const { return begin(); }
+
+            const_iterator cend() const { return end(); }
+        };
+
+    }
+
+    // ================================ strategy ===============================
+    namespace _detail {
+        template<typename Layout, typename... Types>
+        struct soa_layout_buffer {
+            using type = soa_buffer<Layout, Types...>;
+        };
+
+        template<size_t Size, typename... Types>
+        struct soa_layout_buffer<storage::chunked_layout<Size>, Types...> {
+            using type = chunked_buffer<Size, Types...>;
+        };
+
+        struct empty_id_index {};
+    }
+
+    namespace strategy {
+        struct structure_of_array {
+            template<typename Layout, typename... Types>
+            using container = typename _detail::soa_layout_buffer<Layout, Types...>::type;
+        };
+
+        // ID の生成とは独立して、検索用の索引を選ぶ。
+        struct linear_id_lookup {
+            static constexpr bool indexed = false;
+            template<typename ID>
+            using index = _detail::empty_id_index;
+        };
+
+        struct hash_id_lookup {
+            static constexpr bool indexed = true;
+            template<typename ID>
+            using index = std::unordered_map<ID, size_t>;
+        };
+    }
+
+    namespace identity {
+        struct none {};
+
+        template<generator::is_generator Generator = generator::iota,
+            typename Lookup = strategy::hash_id_lookup>
+        struct generated {
+            using generator_type = Generator;
+            using lookup_type = Lookup;
+        };
+
+    }
+
+    namespace _detail {
+
+        template<typename Rows>
+        using rows_schema =
+            std::conditional_t<std::same_as<typename Rows::value_type,
+                                   typename Rows::element_types::template apply<std::tuple>>,
+                typename Rows::element_types::template apply<schema>,
+                schema<record<typename Rows::value_type>>>;
+
+        template<typename Rows, bool Const, bool = rows_schema<Rows>::named>
+        struct indexed_fields {
+            using type = unnamed_fields;
+            using parent_type = std::conditional_t<Const, const Rows, Rows>;
+
+            static type get(parent_type&, size_t) { return {}; }
+        };
+
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+        // 配置方針が返す行の型に依存せず、各列の実際の参照型から行を生成する。
+        template<typename Record, typename References>
+        struct named_indexed_fields;
+
+        template<typename Record, typename... References>
+        struct named_indexed_fields<Record, type_list<References...>> {
+            struct type;
+            consteval {
+                constexpr std::array<std::meta::info, sizeof...(References)> types{^^References...};
+                auto members = std::meta::nonstatic_data_members_of(
+                    ^^Record, std::meta::access_context::current());
+                if (members.size() != types.size())
+                    throw "Record and column counts must match";
+                std::vector<std::meta::info> fields;
+                for (size_t i = 0; i < types.size(); ++i)
+                    fields.push_back(std::meta::data_member_spec(
+                        types[i], {.name = std::meta::identifier_of(members[i])}));
+                std::meta::define_aggregate(^^type, fields);
+            }
+        };
+
+        template<typename Rows, bool Const>
+        struct indexed_fields<Rows, Const, true> {
+            using parent_type = std::conditional_t<Const, const Rows, Rows>;
+            using indices = std::make_index_sequence<Rows::element_types::size>;
+
+            template<size_t... Indices>
+            static auto reference_type(std::index_sequence<Indices...>) ->
+                typename named_indexed_fields<typename rows_schema<Rows>::record_type,
+                    type_list<decltype(std::declval<parent_type&>()
+                            .template column<Indices>()[size_t{}])...>>::type;
+
+            using type = decltype(reference_type(indices{}));
+
+            static type get(parent_type& rows, size_t position) {
+                return [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                    return type{rows.template column<Indices>()[position]...};
+                }(indices{});
+            }
+        };
+#endif
+
+        // 列の所有・配置は Rows に任せ、ID 列と検索索引だけを管理する。
+        template<typename Rows, typename Layout, typename ID, typename Lookup>
+        class indexed_storage {
+            using index_type = typename Lookup::template index<ID>;
+            Rows m_rows;
+            [[no_unique_address]] index_type m_index;
+            static_assert(std::is_nothrow_move_constructible_v<index_type> &&
+                              std::is_nothrow_swappable_v<index_type>,
+                "ID lookup indexes require noexcept move and swap");
+            using data_tuple = typename Rows::element_types::template apply<std::tuple>;
+
+            static_assert(
+                std::is_copy_constructible_v<ID> && std::is_nothrow_move_constructible_v<ID> &&
+                    std::is_nothrow_move_assignable_v<ID> && std::is_nothrow_swappable_v<ID>,
+                "IDs require copy construction and noexcept move/swap");
+            static_assert(!Lookup::indexed ||
+                              (std::is_nothrow_invocable_v<std::hash<ID>, const ID&> &&
+                                  noexcept(std::declval<const ID&>() == std::declval<const ID&>())),
+                "Indexed ID lookup requires noexcept hashing and equality");
+
+            static Rows take_rows(indexed_storage& other) noexcept(
+                std::is_nothrow_move_constructible_v<Rows>) {
+                if constexpr (std::is_nothrow_move_constructible_v<Rows>) {
+                    return std::move(other.m_rows);
+                } else {
+                    try {
+                        return std::move(other.m_rows);
+                    } catch (...) {
+                        other.clear();
+                        throw;
+                    }
+                }
+            }
+
+            void append_id(ID id, size_t position) {
+                if constexpr (Layout::resizable)
+                    ids.push_back(std::move(id));
+                else
+                    ids[position] = std::move(id);
+            }
+
+            void discard_ids(size_t count) noexcept {
+                if constexpr (Layout::resizable)
+                    while (ids.size() > count)
+                        ids.pop_back();
+            }
+
+        public:
+            using schema_type = rows_schema<Rows>;
+            using element_types = typename Rows::element_types;
+            using id_type = ID;
+            using value_type = typename Rows::value_type;
+            using id_columns_type = std::conditional_t<Layout::resizable, std::vector<ID>,
+                std::array<ID, Layout::max_size>>;
+            static_assert(Layout::resizable || std::default_initializable<ID>,
+                "Fixed-capacity identity storage requires default-constructible IDs");
+            id_columns_type ids{};
+
+            template<bool Const>
+            using field_reference = typename indexed_fields<Rows, Const>::type;
+
+            indexed_storage() = default;
+            indexed_storage(const indexed_storage&) = default;
+
+            indexed_storage(indexed_storage&& other) noexcept(
+                std::is_nothrow_move_constructible_v<Rows> &&
+                std::is_nothrow_move_constructible_v<decltype(ids)> &&
+                std::is_nothrow_move_constructible_v<decltype(m_index)>)
+                : m_rows(take_rows(other)), m_index(std::move(other.m_index)),
+                  ids(std::move(other.ids)) {
+                other.clear();
+            }
+
+            void swap(indexed_storage& other) noexcept(
+                noexcept(m_rows.swap(other.m_rows)) && std::is_nothrow_swappable_v<decltype(ids)> &&
+                std::is_nothrow_swappable_v<decltype(m_index)>) {
+                if constexpr (noexcept(m_rows.swap(other.m_rows))) {
+                    m_rows.swap(other.m_rows);
+                } else {
+                    try {
+                        m_rows.swap(other.m_rows);
+                    } catch (...) {
+                        clear();
+                        other.clear();
+                        throw;
+                    }
+                }
+                using std::swap;
+                swap(ids, other.ids);
+                swap(m_index, other.m_index);
+            }
+
+            indexed_storage& operator=(const indexed_storage& other)
+                requires std::is_copy_constructible_v<Rows>
+            {
+                if (this != std::addressof(other)) {
+                    indexed_storage copy(other);
+                    swap(copy);
+                }
+                return *this;
+            }
+
+            indexed_storage& operator=(const indexed_storage&)
+                requires(!std::is_copy_constructible_v<Rows>)
+            = delete;
+
+            indexed_storage& operator=(indexed_storage&& other) noexcept(
+                std::is_nothrow_move_constructible_v<indexed_storage> && noexcept(swap(other))) {
+                if (this != std::addressof(other)) {
+                    indexed_storage moved(std::move(other));
+                    swap(moved);
+                }
+                return *this;
+            }
+
+            size_t size() const { return m_rows.size(); }
+
+            bool empty() const { return m_rows.empty(); }
+
+            size_t row_limit() const {
+                auto limit = m_rows.max_size();
+                if constexpr (Layout::resizable)
+                    limit = std::min(limit, ids.max_size());
+                if constexpr (Lookup::indexed)
+                    limit = std::min(limit, m_index.max_size());
+                return limit;
+            }
+
+            void reserve(size_t count) {
+                if (count > row_limit())
+                    throw std::length_error("Buffer capacity exceeds max_size");
+                m_rows.reserve(count);
+                if constexpr (Layout::resizable)
+                    ids.reserve(count);
+                if constexpr (Lookup::indexed)
+                    m_index.reserve(count);
+            }
+
+            size_t capacity() const { return m_rows.capacity(); }
+
+            template<size_t N>
+            auto column() {
+                return m_rows.template column<N>();
+            }
+
+            template<size_t N>
+            auto column() const {
+                return m_rows.template column<N>();
+            }
+
+            auto columns()
+                requires requires { m_rows.columns(); }
+            {
+                return m_rows.columns();
+            }
+
+            auto columns() const
+                requires requires { m_rows.columns(); }
+            {
+                return m_rows.columns();
+            }
+
+            auto chunks()
+                requires requires { m_rows.chunks(); }
+            {
+                return m_rows.chunks();
+            }
+
+            auto chunks() const
+                requires requires { m_rows.chunks(); }
+            {
+                return m_rows.chunks();
+            }
+
+            size_t chunk_count() const
+                requires requires { m_rows.chunk_count(); }
+            {
+                return m_rows.chunk_count();
+            }
+
+            auto chunk(size_t i)
+                requires requires { m_rows.chunk(i); }
+            {
+                return m_rows.chunk(i);
+            }
+
+            auto chunk(size_t i) const
+                requires requires { m_rows.chunk(i); }
+            {
+                return m_rows.chunk(i);
+            }
+
+            auto fields(size_t i) { return indexed_fields<Rows, false>::get(m_rows, i); }
+
+            auto fields(size_t i) const { return indexed_fields<Rows, true>::get(m_rows, i); }
+
+            value_type read(size_t i) const
+                requires std::is_copy_constructible_v<value_type>
+            {
+                return m_rows.read(i);
+            }
+
+            void write(size_t i, value_type value) { m_rows.write(i, std::move(value)); }
+
+            std::expected<size_t, error_code> index(const ID& id) const {
+                if constexpr (Lookup::indexed) {
+                    auto found = m_index.find(id);
+                    if (found != m_index.end())
+                        return found->second;
+                } else {
+                    for (size_t i = 0; i < size(); ++i)
+                        if (ids[i] == id)
+                            return i;
+                }
+                return std::unexpected{error_code::not_found_id};
+            }
+
+            template<typename... Args>
+            std::expected<void, error_code> push_back(ID id, Args&&... args) {
+                if (size() >= row_limit())
+                    return std::unexpected{error_code::buffer_over};
+                if constexpr (!Lookup::indexed) {
+                    if (index(id))
+                        return std::unexpected{error_code::duplicate_id};
+                }
+                data_tuple values(std::forward<Args>(args)...);
+                const auto previous = size();
+                if constexpr (Layout::resizable) {
+                    if (ids.size() == ids.capacity())
+                        ids.reserve(size() + std::min(row_limit() - size(), size() / 2 + 1));
+                }
+                std::apply(
+                    [&](auto&&... fields) {
+                        m_rows.push_back(std::forward<decltype(fields)>(fields)...);
+                    },
+                    std::move(values));
+                try {
+                    append_id(std::move(id), previous);
+                    if constexpr (Lookup::indexed) {
+                        if (!m_index.emplace(ids[previous], previous).second) {
+                            discard_ids(previous);
+                            m_rows.pop_back();
+                            return std::unexpected{error_code::duplicate_id};
+                        }
+                    }
+                } catch (...) {
+                    discard_ids(previous);
+                    m_rows.pop_back();
+                    throw;
                 }
                 return {};
             }
-        }
+
+            void pop_back() noexcept {
+                if (empty())
+                    return;
+                if constexpr (Lookup::indexed)
+                    m_index.erase(ids[size() - 1]);
+                discard_ids(size() - 1);
+                m_rows.pop_back();
+            }
+
+            void clear() noexcept {
+                if constexpr (Lookup::indexed)
+                    m_index.clear();
+                discard_ids(0);
+                m_rows.clear();
+            }
+
+            std::expected<void, error_code> swap(size_t left, size_t right) {
+                if (left >= size() || right >= size())
+                    return std::unexpected{error_code::buffer_over};
+                if (left == right)
+                    return {};
+                [&]<size_t... Indices>(std::index_sequence<Indices...>) {
+                    (
+                        [&] {
+                            auto view = column<Indices>();
+                            auto first = std::ranges::begin(view);
+                            std::ranges::iter_swap(first + left, first + right);
+                        }(),
+                        ...);
+                }(std::make_index_sequence<Rows::element_types::size>{});
+                using std::swap;
+                swap(ids[left], ids[right]);
+                if constexpr (Lookup::indexed) {
+                    m_index.find(ids[left])->second = left;
+                    m_index.find(ids[right])->second = right;
+                }
+                return {};
+            }
+
+            template<typename Generator>
+            std::expected<void, error_code> resize_with_generator(
+                size_t count, Generator& generator) {
+                if (count > row_limit())
+                    return std::unexpected{error_code::buffer_over};
+                if (count <= size()) {
+                    while (size() > count)
+                        pop_back();
+                    return {};
+                }
+                const auto previous = size();
+                std::vector<ID> generated;
+                generated.reserve(count - previous);
+                for (size_t i = previous; i < count; ++i) {
+                    auto id = generator.next();
+                    if (!id)
+                        return std::unexpected{error_code::generate_id_failed};
+                    generated.push_back(std::move(*id));
+                }
+                reserve(count);
+                m_rows.resize(count);
+                auto indexed = previous;
+                auto rollback = [&] {
+                    if constexpr (Lookup::indexed)
+                        for (size_t i = previous; i < indexed; ++i)
+                            m_index.erase(ids[i]);
+                    discard_ids(previous);
+                    m_rows.resize(previous);
+                };
+                try {
+                    for (auto& id : generated) {
+                        if constexpr (!Lookup::indexed) {
+                            for (size_t i = 0; i < indexed; ++i) {
+                                if (ids[i] == id) {
+                                    rollback();
+                                    return std::unexpected{error_code::duplicate_id};
+                                }
+                            }
+                        }
+                        append_id(std::move(id), indexed);
+                        if constexpr (Lookup::indexed) {
+                            if (!m_index.emplace(ids[indexed], indexed).second) {
+                                rollback();
+                                return std::unexpected{error_code::duplicate_id};
+                            }
+                        }
+                        ++indexed;
+                    }
+                } catch (...) {
+                    rollback();
+                    throw;
+                }
+                return {};
+            }
+        };
+
+        template<typename Rows, typename Events>
+        class unidentified_buffer : public Rows {
+        public:
+            using element_types = typename Rows::element_types;
+
+        private:
+            [[no_unique_address]] Events m_events;
+            using data_tuple = typename element_types::template apply<std::tuple>;
+            using before =
+                typename element_types::template apply<eventsystem::event::will_insert_row_event>;
+            using after =
+                typename element_types::template apply<eventsystem::event::did_insert_row_event>;
+
+            template<typename... Args>
+            std::expected<void, error_code> insert(Args&&... args) {
+                if (this->size() >= this->max_size())
+                    return std::unexpected{error_code::buffer_over};
+                if constexpr (!Events::event_types::template contains<before> &&
+                              !Events::event_types::template contains<after>) {
+                    Rows::push_back(std::forward<Args>(args)...);
+                    return {};
+                } else {
+                    data_tuple values(std::forward<Args>(args)...);
+                    if constexpr (Events::event_types::template contains<before>) {
+                        auto references =
+                            std::apply([](auto&... fields) { return std::tie(fields...); }, values);
+                        before event{this->size(), references};
+                        m_events.on(event);
+                        if (event.canceled())
+                            return std::unexpected{error_code::operation_canceled};
+                    }
+                    std::apply(
+                        [&](auto&&... fields) {
+                            Rows::push_back(std::forward<decltype(fields)>(fields)...);
+                        },
+                        std::move(values));
+                    if constexpr (Events::event_types::template contains<after>) {
+                        with_row_references<element_types>(
+                            *this, this->size() - 1, [&](auto references) {
+                                after event{this->size() - 1, references};
+                                m_events.on(event);
+                            });
+                    }
+                    return {};
+                }
+            }
+
+        public:
+            static constexpr bool has_identity = false;
+
+            Events& events() { return m_events; }
+
+            const Events& events() const { return m_events; }
+
+            std::expected<void, error_code> push_back(typename Rows::value_type value) {
+                using schema_type = rows_schema<Rows>;
+                return schema_type::apply_value(std::move(value), [&](auto&&... fields) {
+                    return insert(std::forward<decltype(fields)>(fields)...);
+                });
+            }
+
+            template<typename... Args>
+                requires(sizeof...(Args) == element_types::size &&
+                         !(sizeof...(Args) == 1 &&
+                             (std::same_as<std::remove_cvref_t<Args>, typename Rows::value_type> &&
+                                 ...)))
+            std::expected<void, error_code> push_back(Args&&... args) {
+                return insert(std::forward<Args>(args)...);
+            }
+
+            std::expected<void, error_code> resize(size_t count)
+                requires std::default_initializable<typename Rows::value_type>
+            {
+                if (count > this->max_size())
+                    return std::unexpected{error_code::buffer_over};
+                Rows::resize(count);
+                return {};
+            }
+
+            void swap(unidentified_buffer& other) noexcept(
+                noexcept(std::declval<Rows&>().swap(other)) &&
+                std::is_nothrow_swappable_v<Events>) {
+                Rows::swap(other);
+                using std::swap;
+                swap(m_events, other.m_events);
+            }
+
+            friend void swap(unidentified_buffer& a, unidentified_buffer& b) noexcept(
+                noexcept(a.swap(b))) {
+                a.swap(b);
+            }
+        };
+
+        template<typename Structure, typename Layout, typename Identity, typename Events,
+            typename... Types>
+        struct buffer_type;
+
+        template<typename Structure, typename Layout, typename Events, typename... Types>
+        struct buffer_type<Structure, Layout, identity::none, Events, Types...> {
+            using rows = typename Structure::template container<Layout, Types...>;
+            using type = unidentified_buffer<rows, Events>;
+        };
+
+        template<typename Structure, typename Layout, typename Generator, typename Lookup,
+            typename Events, typename... Types>
+        struct buffer_type<Structure, Layout, identity::generated<Generator, Lookup>, Events,
+            Types...> {
+            using type = identified_buffer<
+                indexed_storage<typename Structure::template container<Layout, Types...>, Layout,
+                    typename Generator::generate_type, Lookup>,
+                Generator, Events>;
+        };
+
+        template<typename Schema>
+        struct schema_arguments {
+            using type = type_list<record<Schema>>;
+        };
+
+        template<typename Record>
+        struct schema_arguments<record<Record>> {
+            using type = type_list<record<Record>>;
+        };
+
+        template<typename... Types>
+        struct schema_arguments<type_list<Types...>> {
+            using type = type_list<Types...>;
+        };
+
+        template<typename Structure, typename Layout, typename Identity, typename Events,
+            typename Arguments>
+        struct select_buffer;
+
+        template<typename Structure, typename Layout, typename Identity, typename Events,
+            typename... Types>
+        struct select_buffer<Structure, Layout, Identity, Events, type_list<Types...>>
+            : buffer_type<Structure, Layout, Identity, Events, Types...> {};
+    }
+
+    template<typename Schema = type_list<>, typename Structure = strategy::structure_of_array,
+        typename Layout = storage::dynamic_layout<>, typename Identity = identity::none,
+        eventsystem::is_eventsystem Events = eventsystem::dummy>
+    class buffer : public _detail::select_buffer<Structure, Layout, Identity, Events,
+                       typename _detail::schema_arguments<Schema>::type>::type {
+        using base_type = typename _detail::select_buffer<Structure, Layout, Identity, Events,
+            typename _detail::schema_arguments<Schema>::type>::type;
 
     public:
-        storage_type storage;
+        using base_type::base_type;
+        using schema_type = Schema;
+        using structure_type = Structure;
+        using layout_type = Layout;
+        using identity_type = Identity;
+        using event_system_type = Events;
 
-        template<size_t N>
-        [[nodiscard]] decltype(auto) get() {
-            return schema_type::template column<N>(storage.entries);
-        }
-
-        template<size_t N>
-        [[nodiscard]] decltype(auto) get() const {
-            return schema_type::template column<N>(storage.entries);
-        }
-
-        [[nodiscard]] size_t size() const { return storage.size(); }
-
-        [[nodiscard]] bool empty() const { return storage.empty(); }
-
-        template<size_t N> auto column() {
-            return std::views::counted(std::ranges::begin(get<N>()),
-                                       static_cast<ptrdiff_t>(size()));
-        }
-
-        template<size_t N> auto column() const {
-            return std::views::counted(std::ranges::begin(get<N>()),
-                                       static_cast<ptrdiff_t>(size()));
-        }
-
-        auto columns() { return schema_type::views(storage.entries, size()); }
-
-        auto columns() const { return schema_type::views(storage.entries, size()); }
-
-        EventSystem& events() { return m_eventsystem; }
-
-        const EventSystem& events() const { return m_eventsystem; }
-
-        std::expected<size_t, error_code> index(id_type id) const { return storage.index(id); }
-
-        std::expected<entry, error_code> operator[](id_type id) {
-            auto index = this->index(id);
-            if (!index)
-                return std::unexpected{index.error()};
-            return entry{this, *index};
-        }
-
-        std::expected<const_entry, error_code> operator[](id_type id) const {
-            auto index = this->index(id);
-            if (!index)
-                return std::unexpected{index.error()};
-            return const_entry{this, *index};
-        }
-
-        template<size_t N>
-        using element_reference = decltype(schema_type::template column<N>(
-            std::declval<columns_type&>())[size_t{}]);
-        template<size_t N>
-        using const_element_reference = decltype(schema_type::template column<N>(
-            std::declval<const columns_type&>())[size_t{}]);
-
-        template<size_t N>
-        std::expected<_detail::lookup_value<element_reference<N>>, error_code> get(id_type id) {
-            auto index = this->index(id);
-            if (!index)
-                return std::unexpected{index.error()};
-            return _detail::lookup_reference(get<N>()[*index]);
-        }
-
-        template<size_t N>
-        std::expected<_detail::lookup_value<const_element_reference<N>>, error_code>
-        get(id_type id) const {
-            auto index = this->index(id);
-            if (!index)
-                return std::unexpected{index.error()};
-            return _detail::lookup_reference(get<N>()[*index]);
-        }
-
-        template<typename... Args>
-        std::expected<void, error_code> push_back(Args&&... args) {
-            if constexpr (schema_type::named && sizeof...(Args) == 1) {
-                using argument = std::tuple_element_t<0, std::tuple<Args...>>;
-                if constexpr (std::same_as<std::remove_cvref_t<argument>,
-                                           typename schema_type::record_type>) {
-                    return schema_type::apply_record(
-                        std::forward<Args>(args)..., [&](auto&&... values) {
-                            return insert_columns(std::forward<decltype(values)>(values)...);
-                        });
-                } else {
-                    return insert_columns(std::forward<Args>(args)...);
-                }
-            } else {
-                return insert_columns(std::forward<Args>(args)...);
-            }
-        }
-
-        void pop_back() { storage.pop_back(); }
-
-        void clear() { storage.clear(); }
-
-        std::expected<void, error_code> resize(size_t size) {
-            if (size > max_size)
-                return std::unexpected{error_code::buffer_over};
-            auto old_size = this->size();
-            if constexpr (requires { std::tuple_size<decltype(storage.ids)>::value; }) {
-                // 未使用の ID 領域に先に書き込み、退避用 vector を確保せずに行数を更新する。
-                for (size_t i = old_size; i < size; ++i) {
-                    std::optional<id_type> id = m_generator.next();
-                    if (!id)
-                        return std::unexpected{error_code::generate_id_failed};
-                    storage.ids[i] = *id;
-                }
-                return storage.resize(size);
-            }
-            std::vector<id_type> new_ids;
-            if (size > old_size) {
-                new_ids.reserve(size - old_size);
-                for (size_t i = old_size; i < size; ++i) {
-                    std::optional<id_type> id = m_generator.next();
-                    if (!id)
-                        return std::unexpected{error_code::generate_id_failed};
-                    new_ids.push_back(*id);
-                }
-            }
-            auto result = storage.resize(size);
-            if (!result)
-                return result;
-            for (size_t i = 0; i < new_ids.size(); ++i)
-                storage.ids[old_size + i] = new_ids[i];
-            return {};
-        }
-
-        std::expected<void, error_code> erase(id_type id) {
-            auto index = this->index(id);
-            if (!index)
-                return std::unexpected{index.error()};
-            if (*index != size() - 1) {
-                auto result = storage.swap(*index, size() - 1);
-                if (!result)
-                    return result;
-            }
-            storage.pop_back();
-            return {};
-        }
-
-        iterator begin() { return {this, 0}; }
-
-        iterator end() { return {this, static_cast<ptrdiff_t>(size())}; }
-
-        const_iterator begin() const { return {this, 0}; }
-
-        const_iterator end() const { return {this, static_cast<ptrdiff_t>(size())}; }
-
-        const_iterator cbegin() const { return begin(); }
-
-        const_iterator cend() const { return end(); }
+        friend void swap(buffer& a, buffer& b) noexcept(noexcept(a.swap(b))) { a.swap(b); }
     };
 
-#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
-    // record<T> を既存の buffer に渡すための別名。
-    template<typename Record,
-            generator::is_generator IDGenerator = generator::iota,
-            eventsystem::is_eventsystem EventSystem = eventsystem::dummy,
-            template<typename, size_t, typename...> typename Storage = storage::static_storage,
-            size_t MaxSize = Storage<size_t, 1, int>::default_max_size>
-    using record_buffer = buffer<IDGenerator, EventSystem, Storage, MaxSize, record<Record>>;
-#endif
+    template<typename Layout, typename... Types>
+    using basic_soa = buffer<type_list<Types...>, strategy::structure_of_array, Layout>;
 
+    template<typename... Types>
+    using soa = basic_soa<storage::dynamic_layout<>, Types...>;
+
+    template<size_t Size, typename... Types>
+    using fixed_soa = basic_soa<storage::fixed_layout<Size>, Types...>;
+
+    template<size_t Size, typename... Types>
+    using chunked_soa = basic_soa<storage::chunked_layout<Size>, Types...>;
+
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+    template<typename Record, typename Layout = storage::dynamic_layout<>>
+    using record_soa = buffer<Record, strategy::structure_of_array, Layout>;
+
+    template<typename Record, size_t Size = 128>
+    using record_chunked_soa =
+        buffer<Record, strategy::structure_of_array, storage::chunked_layout<Size>>;
+#endif
 
     // ================================== rows =================================
     // 列ストレージ単体の行ビュー
@@ -2454,7 +3068,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
     }
 #endif
 
-}
+        }
 
 // ============================== std::ranges ==============================
 // 行ビューが一時オブジェクトでも、列ストレージが生きていればイテレータを利用できる。

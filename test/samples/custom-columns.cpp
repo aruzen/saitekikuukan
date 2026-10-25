@@ -16,16 +16,14 @@ struct deque_layout {
 
 int main() {
     kk::basic_soa<deque_layout, int, std::string> scores;
-    scores.push_back(10, "first");
-    scores.push_back(20, "second");
-    scores.push_back(30, "third");
+    sample::check(scores.push_back(10, "first").has_value());
+    sample::check(scores.push_back(20, "second").has_value());
+    sample::check(scores.push_back(30, "third").has_value());
     static_assert(std::ranges::random_access_range<decltype(scores.column<0>())>);
     static_assert(!std::ranges::contiguous_range<decltype(scores.column<0>())>);
 
     // 行のプロキシを ranges に渡し、条件に合う行だけを更新する。
-    auto selected = scores | std::views::filter([](auto row) {
-        return std::get<0>(row) >= 20;
-    });
+    auto selected = scores | std::views::filter([](auto row) { return std::get<0>(row) >= 20; });
     std::size_t updated = 0;
     for (auto [score, name] : selected) {
         score += 5;

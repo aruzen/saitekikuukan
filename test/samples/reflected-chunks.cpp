@@ -12,7 +12,7 @@ struct vertex {
 
 int main() {
     kk::record_chunked_soa<vertex, 4> vertices;
-    vertices.resize(10);
+    sample::check(vertices.resize(10).has_value());
     sample::check(vertices.chunk_count() == 3 && vertices.chunk(2).size() == 2);
     float* first_x = &vertices[0].x;
 
@@ -29,7 +29,7 @@ int main() {
     vertices.column<^^vertex::x>()[5] = 42;
     sample::check(vertices[5].x == 42 && vertices[5].group == "default");
 
-    vertices.push_back(vertex{100, 200, "appended"});
+    sample::check(vertices.push_back(vertex{100, 200, "appended"}).has_value());
     sample::check(first_x == &vertices[0].x && vertices.chunk(2).size() == 3);
     vertices.erase_unordered(1);
     sample::check(vertices[1].x == 100 && vertices[1].group == "appended");

@@ -7,23 +7,19 @@
 
 int main() {
     kk::fixed_soa<3, int, std::string> inventory;
-    inventory.push_back(10, "sword");
-    inventory.push_back(20, "shield");
-    inventory.push_back(30, "potion");
+    sample::check(inventory.push_back(10, "sword").has_value());
+    sample::check(inventory.push_back(20, "shield").has_value());
+    sample::check(inventory.push_back(30, "potion").has_value());
     sample::check(inventory.size() == inventory.capacity());
 
-    bool full = false;
-    try {
-        inventory.push_back(40, "helmet");
-    } catch (const std::length_error&) {
-        full = true;
-    }
-    sample::check(full && inventory.size() == 3);
+    auto full = inventory.push_back(40, "helmet");
+    sample::check(!full && full.error() == kk::error_code::buffer_over);
+    sample::check(inventory.size() == 3);
 
     // 順序を保たない削除では、全列の末尾行が削除位置へ移る。
     inventory.erase_unordered(0);
     sample::check(inventory.read(0) == std::tuple{30, std::string("potion")});
-    inventory.push_back(40, "helmet");
+    sample::check(inventory.push_back(40, "helmet").has_value());
     sample::check(inventory.read(2) == std::tuple{40, std::string("helmet")});
 
     const auto& items = inventory;

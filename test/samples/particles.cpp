@@ -17,8 +17,8 @@ void step(particles& values, float dt) {
 int main() {
     particles values;
     values.reserve(8);
-    values.push_back(0.0f, 10.0f, 2.0f, -4.0f);
-    values.push_back(5.0f, 20.0f, 4.0f, -2.0f);
+    sample::check(values.push_back(0.0f, 10.0f, 2.0f, -4.0f).has_value());
+    sample::check(values.push_back(5.0f, 20.0f, 4.0f, -2.0f).has_value());
     step(values, 0.5f);
 
     sample::check(values.read(0) == std::tuple{1.0f, 8.0f, 2.0f, -4.0f});
@@ -37,6 +37,6 @@ int main() {
     values.write(0, saved);
     sample::check(values.column<0>()[0] == 100);
 
-    std::cout << "particles: x=" << values.column<0>()[0]
-              << ", y=" << values.column<1>()[0] << '\n';
+    std::cout << "particles: x=" << values.column<0>()[0] << ", y=" << values.column<1>()[0]
+              << '\n';
 }

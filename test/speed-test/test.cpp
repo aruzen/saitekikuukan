@@ -11,13 +11,18 @@ int main() {
 
     constexpr size_t Size = 1024 * 10;
 
-    buffer<generator::iota, eventsystem::dummy, storage::static_storage, Size, int, int, int, int, int, int> enemies_of_array{};
+    kk::buffer<kk::type_list<int, int, int, int, int, int>, kk::strategy::structure_of_array,
+        kk::storage::fixed_layout<Size>, kk::identity::generated<generator::iota>,
+        eventsystem::dummy>
+        enemies_of_array{};
     enemies_of_array.resize(Size);
-    auto &[max_hp, hp, max_mp, mp, x, y] = enemies_of_array.storage.entries;
-    auto& elem_x = enemies_of_array.get<4>();
-    auto& elem_y = enemies_of_array.get<5>();
-    auto [max_hp_p, hp_p, max_mp_p, mp_p, x_p, y_p] = std::make_tuple(reinterpret_cast<int*>(&max_hp), reinterpret_cast<int*>(&hp), reinterpret_cast<int*>(&max_mp), reinterpret_cast<int*>(&mp), reinterpret_cast<int*>(&x), reinterpret_cast<int*>(&y));
-
+    auto [max_hp, hp, max_mp, mp, x, y] = enemies_of_array.columns();
+    auto elem_x = enemies_of_array.get<4>();
+    auto elem_y = enemies_of_array.get<5>();
+    auto [max_hp_p, hp_p, max_mp_p, mp_p, x_p, y_p] =
+        std::make_tuple(reinterpret_cast<int*>(&max_hp), reinterpret_cast<int*>(&hp),
+            reinterpret_cast<int*>(&max_mp), reinterpret_cast<int*>(&mp),
+            reinterpret_cast<int*>(&x), reinterpret_cast<int*>(&y));
 
     std::array<enemy, Size> array_of_enemies{};
 
@@ -30,7 +35,8 @@ int main() {
             }
         }
         auto end = std::chrono::high_resolution_clock::now();
-        std::println("{}µs", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+        std::println(
+            "{}µs", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
     }
 
     {
@@ -42,7 +48,8 @@ int main() {
             }
         }
         auto end = std::chrono::high_resolution_clock::now();
-        std::println("{}µs", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+        std::println(
+            "{}µs", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
     }
 
     {
@@ -54,7 +61,8 @@ int main() {
             }
         }
         auto end = std::chrono::high_resolution_clock::now();
-        std::println("{}µs", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+        std::println(
+            "{}µs", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
     }
 
     {
@@ -66,7 +74,8 @@ int main() {
             }
         }
         auto end = std::chrono::high_resolution_clock::now();
-        std::println("{}µs", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+        std::println(
+            "{}µs", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
     }
 
     {
@@ -78,7 +87,8 @@ int main() {
             }
         }
         auto end = std::chrono::high_resolution_clock::now();
-        std::println("{}µs", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+        std::println(
+            "{}µs", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
     }
     return 0;
 }

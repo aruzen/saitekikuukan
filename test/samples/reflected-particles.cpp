@@ -13,8 +13,8 @@ struct particle {
 };
 
 int main() {
-    kk::record_soa<particle> values;
-    values.resize(2);
+    kk::buffer<particle> values;
+    sample::check(values.resize(2).has_value());
     sample::check(values[0].y == 10 && values[1].name == "unnamed");
 
     // 構造体を指定するだけで、メンバ名に対応する列ビューを取得できる。
@@ -37,6 +37,6 @@ int main() {
     const auto& constant = values;
     static_assert(std::same_as<decltype(constant.columns().x), std::span<const float>>);
     static_assert(std::same_as<decltype(constant.begin()->name), const std::string&>);
-    std::cout << "reflection: " << constant.begin()->name
-              << " at (" << constant.begin()->x << ", " << constant.begin()->y << ")\n";
+    std::cout << "reflection: " << constant.begin()->name << " at (" << constant.begin()->x << ", "
+              << constant.begin()->y << ")\n";
 }
