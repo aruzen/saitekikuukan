@@ -17,6 +17,7 @@
 #include <concepts>
 #include <coroutine>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <expected>
 #include <functional>
@@ -222,8 +223,31 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         buffer_over,
         generate_id_failed,
         operation_canceled,
-        duplicate_id
+        duplicate_id,
+        invalid_id
     };
+
+    namespace identity {
+        // スロットと世代を分け、削除済みのハンドルが再利用先を指すことを防ぐ。
+        template<std::unsigned_integral Index = std::uint32_t,
+            std::unsigned_integral Generation = std::uint32_t>
+        class generational_id {
+            static_assert(!std::same_as<Index, bool> && !std::same_as<Generation, bool>);
+            Index m_slot = std::numeric_limits<Index>::max();
+            Generation m_generation = 0;
+
+        public:
+            constexpr generational_id() noexcept = default;
+            constexpr generational_id(Index slot, Generation generation) noexcept
+                : m_slot(slot), m_generation(generation) {}
+
+            constexpr Index slot() const noexcept { return m_slot; }
+
+            constexpr Generation generation() const noexcept { return m_generation; }
+
+            friend bool operator==(const generational_id&, const generational_id&) = default;
+        };
+    }
 
     // =============================== generator ===============================
     // ID の生成方針
@@ -301,6 +325,76 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 if (m_handle.done())
                     return std::nullopt;
                 return std::move(promise.current_value);
+            }
+        };
+
+        template<std::unsigned_integral Index = std::uint32_t,
+            std::unsigned_integral Generation = std::uint32_t>
+        class recycling {
+            static_assert(!std::same_as<Index, bool> && !std::same_as<Generation, bool>);
+            static constexpr Index none = std::numeric_limits<Index>::max();
+            struct slot_state {
+                Generation generation = 0;
+                Index next_free = none;
+                bool alive = false;
+            };
+            std::vector<slot_state> m_slots;
+            Index m_free = none;
+            bool m_bound = true;
+
+        public:
+            using generate_type = identity::generational_id<Index, Generation>;
+            recycling() = default;
+            recycling(const recycling&) = default;
+            recycling& operator=(const recycling&) = default;
+
+            recycling(recycling&& other) noexcept
+                : m_slots(std::move(other.m_slots)), m_free(std::exchange(other.m_free, none)),
+                  m_bound(std::exchange(other.m_bound, false)) {}
+
+            recycling& operator=(recycling&& other) noexcept {
+                if (this != std::addressof(other)) {
+                    m_slots = std::move(other.m_slots);
+                    m_free = std::exchange(other.m_free, none);
+                    m_bound = std::exchange(other.m_bound, false);
+                }
+                return *this;
+            }
+
+            std::optional<generate_type> next() {
+                if (!m_bound)
+                    return std::nullopt;
+                Index slot;
+                if (m_free != none) {
+                    slot = m_free;
+                    m_free = m_slots[slot].next_free;
+                } else {
+                    if (m_slots.size() >= static_cast<size_t>(none))
+                        return std::nullopt;
+                    slot = static_cast<Index>(m_slots.size());
+                    m_slots.emplace_back();
+                }
+                m_slots[slot].alive = true;
+                return generate_type{slot, m_slots[slot].generation};
+            }
+
+            bool valid(const generate_type& id) const noexcept {
+                return m_bound && static_cast<size_t>(id.slot()) < m_slots.size() &&
+                    m_slots[id.slot()].alive && m_slots[id.slot()].generation == id.generation();
+            }
+
+            bool release(const generate_type& id) noexcept {
+                if (!valid(id))
+                    return false;
+                auto& slot = m_slots[id.slot()];
+                slot.alive = false;
+                // 世代を巻き戻さず、使い切ったスロットは永久に再利用しない。
+                if (slot.generation != std::numeric_limits<Generation>::max()) {
+                    ++slot.generation;
+                    slot.next_free = m_free;
+                    m_free = id.slot();
+                }
+                return true;
             }
         };
 
@@ -2027,6 +2121,63 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             }(std::make_index_sequence<Fields::size>{});
         }
 
+        template<typename Generator>
+        inline constexpr bool releases_ids = requires(Generator& generator,
+            const typename Generator::generate_type& id) {
+            { generator.release(id) } noexcept;
+        };
+
+        template<typename Generator>
+        void release_id(Generator& generator, const typename Generator::generate_type& id) noexcept {
+            if constexpr (releases_ids<Generator>)
+                (void)generator.release(id);
+        }
+
+        template<typename Generator, bool = releases_ids<Generator>>
+        struct pending_id {
+            pending_id(Generator&, const typename Generator::generate_type&) noexcept {}
+            bool unchanged(const typename Generator::generate_type&) const noexcept { return true; }
+            void commit() noexcept {}
+        };
+
+        template<typename Generator>
+        struct pending_id<Generator, true> {
+            using ID = typename Generator::generate_type;
+            static_assert(std::is_nothrow_copy_constructible_v<ID>,
+                "Releasable IDs require noexcept copy construction");
+            Generator& generator;
+            const ID original;
+            bool pending = true;
+
+            pending_id(Generator& generator, const ID& id) noexcept
+                : generator(generator), original(id) {}
+
+            ~pending_id() {
+                if (pending)
+                    release_id(generator, original);
+            }
+
+            bool unchanged(const ID& id) const { return id == original; }
+
+            void commit() noexcept { pending = false; }
+        };
+
+        template<typename Generator>
+        struct pending_id_range {
+            Generator& generator;
+            const std::vector<typename Generator::generate_type>& ids;
+            bool pending = true;
+
+            ~pending_id_range() {
+                if constexpr (releases_ids<Generator>)
+                    if (pending)
+                        for (const auto& id : ids)
+                            release_id(generator, id);
+            }
+
+            void commit() noexcept { pending = false; }
+        };
+
         template<typename Fields, typename ID = void>
         struct mutation_events;
 
@@ -2160,6 +2311,25 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
             explicit identified_buffer(Generator generator, Events events = {})
                 : m_generator(std::move(generator)), m_events(std::move(events)) {}
+            identified_buffer(const identified_buffer&) = default;
+            identified_buffer(identified_buffer&&) = default;
+            identified_buffer& operator=(identified_buffer&&) = default;
+
+            identified_buffer& operator=(const identified_buffer& other)
+                requires(std::is_copy_constructible_v<Storage> &&
+                         std::is_copy_constructible_v<Generator> && std::is_copy_constructible_v<Events>)
+            {
+                if (this != std::addressof(other)) {
+                    identified_buffer copy(other);
+                    swap(copy);
+                }
+                return *this;
+            }
+
+            identified_buffer& operator=(const identified_buffer&)
+                requires(!(std::is_copy_constructible_v<Storage> &&
+                           std::is_copy_constructible_v<Generator> && std::is_copy_constructible_v<Events>))
+                = delete;
 
             size_t size() const { return m_storage.size(); }
 
@@ -2388,9 +2558,13 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 auto id = m_generator.next();
                 if (!id)
                     return std::unexpected{error_code::generate_id_failed};
+                pending_id<Generator> reservation(m_generator, *id);
                 if constexpr (!Events::event_types::template contains<before> &&
                               !Events::event_types::template contains<after>) {
-                    return m_storage.push_back(std::move(*id), std::forward<Args>(args)...);
+                    auto result = m_storage.push_back(std::move(*id), std::forward<Args>(args)...);
+                    if (result)
+                        reservation.commit();
+                    return result;
                 } else {
                     data_tuple values(std::forward<Args>(args)...);
                     if constexpr (Events::event_types::template contains<before>) {
@@ -2401,6 +2575,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                         if (event.canceled())
                             return std::unexpected{error_code::operation_canceled};
                     }
+                    if (!reservation.unchanged(*id))
+                        return std::unexpected{error_code::invalid_id};
                     auto result = std::apply(
                         [&](auto&&... fields) {
                             return m_storage.push_back(
@@ -2409,6 +2585,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                         std::move(values));
                     if (!result)
                         return result;
+                    reservation.commit();
                     if constexpr (Events::event_types::template contains<after>) {
                         with_row_references<element_types>(*this, size() - 1, [&](auto references) {
                             after event{m_storage.ids[size() - 1], references};
@@ -2478,6 +2655,9 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                             return result;
                     }
                 } else {
+                    if constexpr (releases_ids<Generator>)
+                        for (size_t i = 0; i < size(); ++i)
+                            release_id(m_generator, m_storage.ids[i]);
                     m_storage.clear();
                 }
                 return {};
@@ -2512,9 +2692,11 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                         (void)m_storage.swap(index, size() - 1);
                     m_storage.pop_back();
                 };
-                if constexpr (observes<typename notifications::after_delete, Events>) {
+                if constexpr (observes<typename notifications::after_delete, Events> ||
+                              releases_ids<Generator>) {
                     auto id = m_storage.ids[index];
                     erase_row();
+                    release_id(m_generator, id);
                     dispatch_event<typename notifications::after_delete>(
                         m_events, std::move(id), index);
                 } else {
@@ -2721,6 +2903,13 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             using lookup_type = Lookup;
         };
 
+    }
+
+    namespace identity {
+        template<typename Lookup = strategy::hash_id_lookup,
+            std::unsigned_integral Index = std::uint32_t,
+            std::unsigned_integral Generation = std::uint32_t>
+        using recycled = generated<generator::recycling<Index, Generation>, Lookup>;
     }
 
     namespace _detail {
@@ -3088,13 +3277,16 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 if (count > row_limit())
                     return std::unexpected{error_code::buffer_over};
                 if (count <= size()) {
-                    while (size() > count)
+                    while (size() > count) {
+                        release_id(generator, ids[size() - 1]);
                         pop_back();
+                    }
                     return {};
                 }
                 const auto previous = size();
                 std::vector<ID> generated;
                 generated.reserve(count - previous);
+                pending_id_range<Generator> reservations{generator, generated};
                 for (size_t i = previous; i < count; ++i) {
                     auto id = generator.next();
                     if (!id)
@@ -3121,7 +3313,10 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                                 }
                             }
                         }
-                        append_id(std::move(id), indexed);
+                        if constexpr (releases_ids<Generator>)
+                            append_id(id, indexed);
+                        else
+                            append_id(std::move(id), indexed);
                         if constexpr (Lookup::indexed) {
                             if (!m_index.emplace(ids[indexed], indexed).second) {
                                 rollback();
@@ -3134,6 +3329,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                     rollback();
                     throw;
                 }
+                reservations.commit();
                 return {};
             }
         };
@@ -3534,5 +3730,16 @@ namespace std::ranges {
         ::SAITEKIKUUKAN_NAMESPACE::storage::reflection_detail::rows_view<Columns>> = true;
 }
 #endif
+
+namespace std {
+    template<unsigned_integral Index, unsigned_integral Generation>
+    struct hash<::SAITEKIKUUKAN_NAMESPACE::identity::generational_id<Index, Generation>> {
+        size_t operator()(const ::SAITEKIKUUKAN_NAMESPACE::identity::generational_id<Index, Generation>& id) const noexcept {
+            const auto slot = hash<Index>{}(id.slot());
+            return slot ^ (hash<Generation>{}(id.generation()) + size_t{0x9e3779b9} +
+                (slot << 6) + (slot >> 2));
+        }
+    };
+}
 
 #endif // SAITEKIKUUKAN_HPP
