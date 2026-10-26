@@ -275,6 +275,32 @@ IDは対応するbufferの状態に対して使用してください。
 IDを返却できる独自生成器は `release(const ID&) noexcept` を持ち、IDのコピー構築はnoexceptである必要があります。
 通常の `iota` など、返却を持たない生成器にはこの寿命管理を追加しません。
 
+## 行単位のソートと一括操作
+
+```cpp
+kk::soa<int, std::string> values;
+std::array rows{std::tuple{3, std::string("three")}, std::tuple{1, std::string("one")}};
+values.append_range(rows).value();
+values.sort(std::ranges::less{}, [](auto row) { return std::get<0>(row); }).value();
+auto removed = values.erase_if([](auto row) { return std::get<0>(row) == 1; }).value();
+```
+
+- `sort(compare, projection = std::identity{})` は読み取り専用の行を比較し、全列・IDをまとめて並べ替えます。
+  構造体の行では `[](auto row) { return row.x; }` などをprojectionに渡せます。安定ソートではありません。
+  比較・projectionの例外は行の移動前に伝播します。並べ替え用に行数分のindex配列を2本使用し、行の値自体はコピーしません。
+- `append_range(rows)` は元の行型へ変換できる入力rangeを受け取り、成功時に追加件数を返します。
+  bufferを渡す場合は格納方式・ID設定が違っても同じ行型ならコピーできます。元のIDはコピーせず、新しいIDを生成します。
+  入力を先に所有値へ退避するため、自己追加や自分の列ビューからの追加でも再確保後の参照を使いません。
+  move-only値はmove_iteratorなど、値を移動できるrangeで渡します。退避用メモリは入力件数に比例します。
+  入力の読み取り・退避・容量検査の失敗では行を追加しません。
+- `erase_if(predicate)` は読み取り専用の行を判定し、一致する行を順不同で削除して成功時に削除件数を返します。
+
+`sort` は `expected<void, error_code>`、`append_range` / `erase_if` は `expected<size_t, error_code>` を返します。
+操作は公開の追加・交換・削除APIを通り、対応するイベントとIDの寿命管理も実行します。
+キャンセルや変更中の例外では停止し、それまでの変更を保持します。バッチ全体のロールバックは行いません。
+失敗時の追加・削除件数は呼び出し前後のsizeから確認できます。
+比較・projection・predicate・入力rangeの処理中は対象bufferの行数や並び順を変更しないでください。
+
 ## イベント
 
 最後のテンプレート引数で `Events` を指定し、`events()` からイベントシステムを参照します。

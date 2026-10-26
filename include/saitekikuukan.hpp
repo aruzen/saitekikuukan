@@ -3571,6 +3571,94 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         using identity_type = Identity;
         using event_system_type = Events;
 
+        // 比較は読み取り専用の行で行い、並べ替えは公開の交換操作へ集約する。
+        template<typename Compare, typename Projection = std::identity>
+        [[nodiscard]] std::expected<void, error_code> sort(Compare compare, Projection projection = {}) {
+            const auto count = this->size();
+            std::vector<size_t> order(count);
+            for (size_t i = 0; i < count; ++i)
+                order[i] = i;
+            const auto& rows = std::as_const(*this);
+            std::sort(order.begin(), order.end(), [&](size_t left, size_t right) {
+                return std::invoke(compare, std::invoke(projection, rows[left]),
+                    std::invoke(projection, rows[right]));
+            });
+            std::vector<size_t> destination(count);
+            for (size_t i = 0; i < count; ++i)
+                destination[order[i]] = i;
+            for (size_t i = 0; i < count; ++i) {
+                while (destination[i] != i) {
+                    const auto other = destination[i];
+                    auto result = this->swap_rows(i, other);
+                    if (!result)
+                        return result;
+                    std::swap(destination[i], destination[other]);
+                }
+            }
+            return {};
+        }
+
+        // 入力を所有値へ退避し、列ビューが再確保で無効になる自己追加にも対応する。
+        template<std::ranges::input_range Range>
+            requires std::constructible_from<typename base_type::value_type,
+                std::ranges::range_reference_t<Range>>
+        [[nodiscard]] std::expected<size_t, error_code> append_range(Range&& rows) {
+            using value_type = typename base_type::value_type;
+            const auto available = this->max_size() - this->size();
+            std::vector<value_type> staged;
+            if constexpr (std::ranges::sized_range<Range>) {
+                const auto count = std::ranges::size(rows);
+                if (std::cmp_greater(count, available))
+                    return std::unexpected{error_code::buffer_over};
+                staged.reserve(static_cast<size_t>(count));
+            }
+            for (auto&& row : rows) {
+                if (staged.size() == available)
+                    return std::unexpected{error_code::buffer_over};
+                staged.emplace_back(std::forward<decltype(row)>(row));
+            }
+            if (staged.empty())
+                return size_t{0};
+            this->reserve(this->size() + staged.size());
+            size_t appended = 0;
+            for (auto& row : staged) {
+                auto result = this->push_back(std::move(row));
+                if (!result)
+                    return std::unexpected{result.error()};
+                ++appended;
+            }
+            return appended;
+        }
+
+        template<typename OtherSchema, typename OtherStructure, typename OtherLayout,
+            typename OtherIdentity, typename OtherEvents>
+            requires(std::same_as<typename base_type::value_type,
+                typename buffer<OtherSchema, OtherStructure, OtherLayout, OtherIdentity,
+                    OtherEvents>::value_type> &&
+                std::is_copy_constructible_v<typename base_type::value_type>)
+        [[nodiscard]] std::expected<size_t, error_code> append_range(
+            const buffer<OtherSchema, OtherStructure, OtherLayout, OtherIdentity, OtherEvents>& rows) {
+            auto values = std::views::iota(size_t{0}, rows.size()) |
+                std::views::transform([&](size_t i) { return rows.read(i); });
+            return append_range(values);
+        }
+
+        template<typename Predicate>
+        [[nodiscard]] std::expected<size_t, error_code> erase_if(Predicate predicate) {
+            size_t removed = 0, index = 0;
+            while (index < this->size()) {
+                if (std::invoke(predicate, std::as_const(*this)[index])) {
+                    auto result = this->erase_unordered(index);
+                    if (!result)
+                        return std::unexpected{result.error()};
+                    ++removed;
+                } else {
+                    ++index;
+                }
+            }
+            return removed;
+        }
+
         friend void swap(buffer& a, buffer& b) noexcept(noexcept(a.swap(b))) { a.swap(b); }
     };
 
