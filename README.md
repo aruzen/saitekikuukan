@@ -209,6 +209,7 @@ Identified rows reserve the names `id`, `get`, `parent`, and `index` for the row
 Empty, exhausted, and moved-from generators return `nullopt`; coroutine exceptions propagate from `next()`.
 The generator exclusively owns its frame, is move-only, and also supports move-only values.
 Pass a stateful generator to an identified buffer's constructor; an initial event system may be passed as its second argument.
+
 ## Sparse ID lookup
 
 `strategy::sparse_id_lookup<PageSize = 256, Key = strategy::sparse_key>` maps unsigned keys directly to row positions using paged arrays.
@@ -217,6 +218,20 @@ Custom projections must be noexcept and return an unsigned integer fitting `size
 Only one ID per projected key can be stored; lookup also checks the complete ID.
 Pages are allocated on demand. The outer page table grows with the largest key, so prefer hashing for extremely sparse, large keys.
 `reserve(n)` reserves page-table capacity; `clear()` retains pages for reuse. Compare memory use and constant costs for your workload.
+
+## Recycling and generational IDs
+
+`identity::recycled<Lookup = strategy::hash_id_lookup, Index = uint32_t, Generation = uint32_t>` combines a recycling generator and the selected lookup policy.
+Its `identity::generational_id<Index, Generation>` handles expose `slot()` and `generation()`.
+Deletion, shrinking, and clearing release IDs; a reused slot receives a new generation, so old IDs do not resolve.
+Slots are permanently retired at the maximum generation instead of wrapping. The maximum Index value is reserved for invalid handles.
+Exhaustion returns `generate_id_failed`. Copies have independent pools; moves transfer the pool and leave the source generator unbound.
+Use handles with the corresponding buffer state.
+
+Canceled/failed insertion and failed batch growth release reservations; an exception after successful insertion does not release its live ID.
+Changing a recycling ID in a before-insert event returns `invalid_id`.
+Custom releasable generators implement `release(const ID&) noexcept` and use IDs with noexcept copy construction.
+Generators without release support retain their existing behavior.
 
 ## Events
 

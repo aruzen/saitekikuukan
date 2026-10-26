@@ -247,6 +247,33 @@ kk::buffer<kk::type_list<float>, kk::strategy::structure_of_array,
 要素用ページは必要になった時だけ確保します。外側のページ表は最大キーに応じて伸びるため、
 極端に疎な巨大IDにはハッシュ方式が適します。`reserve(n)` はページ表の予約を行い、
 `clear` は確保済みのページを再利用します。ハッシュ方式も平均O(1)なので、速度・メモリは用途ごとに比較します。
+## IDの再利用と世代管理
+
+`identity::recycled<Lookup = strategy::hash_id_lookup, Index = uint32_t, Generation = uint32_t>` は、
+`generator::recycling` と検索方式を組み合わせます。`identity::generated` の仕組みで配置・格納方式と独立に選べます。
+IDは `identity::generational_id<Index, Generation>` で、`slot()` と `generation()` を持ちます。
+
+```cpp
+kk::buffer<kk::type_list<int>, kk::strategy::structure_of_array,
+    kk::storage::dynamic_layout<>, kk::identity::recycled<>> values;
+values.push_back(7).value();
+auto old = values.begin()->id();
+values.erase(old).value();
+values.push_back(9).value();
+// スロットは再利用されるが世代が変わるので、古い ID は見つからない。
+assert(!values.find(old));
+```
+
+削除・縮小・clearでIDを解放し、次回発行時にスロットを再利用します。
+世代の上限に達したスロットは永久に再利用せず、世代を巻き戻しません。
+Indexの最大値は無効ID用に予約されます。スロットを使い切ると `generate_id_failed` です。
+コピーは独立した寿命管理状態を複製し、ムーブは状態を移譲します。ムーブ元の生成器は未接続となり、新規発行を行いません。
+IDは対応するbufferの状態に対して使用してください。
+
+追加前のキャンセル・例外や、一括拡張の失敗でも予約IDを解放します。
+追加後イベントの例外では挿入済みIDを解放しません。再利用型の追加前イベントでIDを書き換えると `invalid_id` になります。
+IDを返却できる独自生成器は `release(const ID&) noexcept` を持ち、IDのコピー構築はnoexceptである必要があります。
+通常の `iota` など、返却を持たない生成器にはこの寿命管理を追加しません。
 
 ## イベント
 
