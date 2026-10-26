@@ -88,7 +88,7 @@ void check_integrated_buffer() {
     buffer_test::check(initialized.resize(2).has_value());
     buffer_test::check(
         initialized.begin()->normal[2] == 1 && initialized.begin()->name == "default");
-    initialized.clear();
+    initialized.clear().value();
     buffer_test::check(initialized.resize(1).has_value());
     buffer_test::check(initialized.begin()->normal[2] == 1);
 

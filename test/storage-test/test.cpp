@@ -91,7 +91,7 @@ void check_resize() {
     kk::soa<int, float, bool, int*> values;
     values.resize(2).value();
     int target = 0;
-    values.write(0, {42, 1.5f, true, &target});
+    values.write(0, {42, 1.5f, true, &target}).value();
     values.resize(8).value();
     check(values.size() == 8 && values.read(0) == std::tuple{42, 1.5f, true, &target});
     for (std::size_t i = 1; i < values.size(); ++i)

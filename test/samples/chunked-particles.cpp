@@ -37,7 +37,7 @@ int main() {
     static_assert(!std::ranges::contiguous_range<decltype(values.column<0>())>);
     static_assert(std::ranges::contiguous_range<decltype(values.chunk(0).column<0>())>);
     const auto last = values.read(299);
-    values.erase_unordered(0);
+    values.erase_unordered(0).value();
     sample::check(values.size() == 299 && values.read(0) == last);
     sample::check(values.chunk(2).size() == 43);
     std::cout << "chunks: 128 + 128 + " << values.chunk(2).size() << " rows\n";

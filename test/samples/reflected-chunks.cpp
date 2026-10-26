@@ -31,7 +31,7 @@ int main() {
 
     sample::check(vertices.push_back(vertex{100, 200, "appended"}).has_value());
     sample::check(first_x == &vertices[0].x && vertices.chunk(2).size() == 3);
-    vertices.erase_unordered(1);
+    vertices.erase_unordered(1).value();
     sample::check(vertices[1].x == 100 && vertices[1].group == "appended");
 
     const auto& constant = vertices;

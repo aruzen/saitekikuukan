@@ -18,7 +18,7 @@ namespace buffer_test {
         static_assert(std::ranges::random_access_range<Buffer>);
         static_assert(std::is_convertible_v<typename Buffer::iterator, typename Buffer::const_iterator>);
         check(values.empty() && values.begin() == values.end());
-        values.pop_back();
+        values.pop_back().value();
 
         check(values.push_back(10, 20, std::string("one")).has_value());
         check(values.push_back(11, 21, std::string("two")).has_value());
@@ -66,13 +66,13 @@ namespace buffer_test {
         check(values.size() == 3);
         check(values.resize(1).has_value());
         check(values.size() == 1 && values.end() - values.begin() == 1);
-        try { values.swap_rows(0, 1); std::abort(); } catch (const std::out_of_range&) {}
+        try { values.swap_rows(0, 1).value(); std::abort(); } catch (const std::out_of_range&) {}
 
-        values.clear();
+        values.clear().value();
         for (int i = 0; i < 4; ++i)
             check(values.push_back(i, i * 2, std::to_string(i)).has_value());
         check(values.push_back(4, 8, std::string("overflow")).error() == kk::error_code::buffer_over);
-        values.swap_rows(0, 0);
+        values.swap_rows(0, 0).value();
         check(values.size() == 4);
         Buffer another{};
         check(values.begin() != another.begin());

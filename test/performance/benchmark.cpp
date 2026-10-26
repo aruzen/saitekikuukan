@@ -49,15 +49,15 @@ void run_case(std::string_view name, const configuration& config,
         std::printf("%s,%.*s,%zu,%.6f,%.0f\n", operation, static_cast<int>(name.size()), name.data(),
             config.rows, time, checksum);
     };
-    auto time = measure(config, [&] { values.clear(); }, [&] { resize(values, config.rows); });
+    auto time = measure(config, [&] { (void)values.clear(); }, [&] { resize(values, config.rows); });
     report("clear_resize", time, verify(values, config.rows, [](auto) { return std::pair{0.0f, 0.0f}; }));
-    time = measure(config, [&] { values.clear(); }, [&] { push(values, config.rows); });
+    time = measure(config, [&] { (void)values.clear(); }, [&] { push(values, config.rows); });
     report("clear_push", time, verify(values, config.rows, [](auto i) {
         return std::pair{static_cast<float>(i), static_cast<float>(i + 1)};
     }));
     auto update = [&](const char* operation, auto function) {
         if (!function) return;
-        values.clear();
+        (void)values.clear();
         resize(values, config.rows);
         auto elapsed = measure(config, [] {}, [&] { function(values, 1, 2); });
         float calls = static_cast<float>(config.iterations * config.samples);
