@@ -10,6 +10,7 @@
 | [fixed-capacity.cpp](fixed-capacity.cpp) | C++23 | 固定容量、容量超過の処理、末尾行を移す削除、const列ビュー |
 | [buffer-ids.cpp](buffer-ids.cpp) | C++23 | IDと物理インデックスの違い、ID検索、expectedによる失敗処理 |
 | [insertion-events.cpp](insertion-events.cpp) | C++23 | リスナの登録・解除、挿入前の値変更とキャンセル、挿入後通知 |
+| [lifecycle-events.cpp](lifecycle-events.cpp) | C++23 | 状態を持つリスナだけを保持し、削除のキャンセル・更新値の変更・削除件数の通知 |
 | [chunked-particles.cpp](chunked-particles.cpp) | C++23 | 128行ずつのChunk、半端な末尾の走査、reserve後の参照、境界をまたぐ削除 |
 | [custom-columns.cpp](custom-columns.cpp) | C++23 | dequeを列にする独自layoutとrangesによる行の絞り込み |
 | [move-only.cpp](move-only.cpp) | C++23 | unique_ptrの列、コンテナのムーブ、所有権を保った行更新 |
@@ -44,7 +45,7 @@ cmake --build build/samples-reflection --parallel 3
 ctest --test-dir build/samples-reflection -L sample --output-on-failure
 ```
 
-通常版8件は `SAITEKIKUUKAN_BUILD_TESTS`、reflection版4件は
+通常版9件は `SAITEKIKUUKAN_BUILD_TESTS`、reflection版4件は
 `SAITEKIKUUKAN_BUILD_REFLECTION_TESTS` に連動します。既存のテストも一緒に実行する場合は
 CTestの `-L sample` を外してください。
 

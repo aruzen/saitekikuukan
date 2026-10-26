@@ -21,7 +21,7 @@ void update_values(Values& values, float dx, float dy) {
     for (std::size_t i = 0; i < values.size(); ++i) {
         auto row = values.read(i);
         update_row(row, dx, dy);
-        values.write(i, row);
+        (void)values.write(i, row);
     }
 }
 template<typename Values>

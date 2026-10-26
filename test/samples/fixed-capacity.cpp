@@ -17,7 +17,7 @@ int main() {
     sample::check(inventory.size() == 3);
 
     // 順序を保たない削除では、全列の末尾行が削除位置へ移る。
-    inventory.erase_unordered(0);
+    inventory.erase_unordered(0).value();
     sample::check(inventory.read(0) == std::tuple{30, std::string("potion")});
     sample::check(inventory.push_back(40, "helmet").has_value());
     sample::check(inventory.read(2) == std::tuple{40, std::string("helmet")});

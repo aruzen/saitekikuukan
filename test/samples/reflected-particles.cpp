@@ -31,7 +31,7 @@ int main() {
     particle saved = values.read(1);
     saved.name = "copied";
     sample::check(values[1].name == "unnamed");
-    values.write(0, saved);
+    values.write(0, saved).value();
     sample::check(values[0].y == 30 && values[0].name == "copied");
 
     const auto& constant = values;

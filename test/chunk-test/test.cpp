@@ -15,7 +15,7 @@ void check_chunks() {
     static_assert(!can_resize<decltype(values.chunk(0))>);
     static_assert(!temporary_columns<decltype(values)>);
     check(values.empty() && values.chunk_count() == 0 && values.chunks().empty());
-    values.pop_back();
+    values.pop_back().value();
     values.push_back(1, std::string("first")).value();
     int* first = &values.template column<0>()[0];
     auto first_chunk = values.chunk(0);
@@ -35,13 +35,13 @@ void check_chunks() {
     auto col = values.template column<0>();
     std::ranges::sort(col, std::greater<>{});
     check(col[0] == static_cast<int>(values.size() + 1));
-    values.write(0, {99, "written"});
+    values.write(0, {99, "written"}).value();
     check(values.read(0) == std::tuple{99, std::string("written")});
     auto tail = values.read(values.size() - 1);
-    values.erase_unordered(0);
+    values.erase_unordered(0).value();
     check(values.read(0) == tail);
     auto old_size = values.size();
-    values.pop_back();
+    values.pop_back().value();
     check(values.size() == old_size - 1 && values.end() - values.begin() == static_cast<std::ptrdiff_t>(values.size()));
 
     const auto& constant = values;
@@ -71,9 +71,9 @@ void check_chunks() {
     check(values.capacity() == values.chunk_count() * Size && &values.template column<0>()[0] == first);
     try { (void)values.at(values.size()); std::abort(); } catch (const std::out_of_range&) {}
     try { (void)values.chunk(values.chunk_count()); std::abort(); } catch (const std::out_of_range&) {}
-    try { values.erase_unordered(values.size()); std::abort(); } catch (const std::out_of_range&) {}
+    try { values.erase_unordered(values.size()).value(); std::abort(); } catch (const std::out_of_range&) {}
     try { values.reserve(values.max_size() + 1); std::abort(); } catch (const std::length_error&) {}
-    values.clear();
+    values.clear().value();
     check(values.empty() && values.chunks().empty() && values.template column<0>().empty());
     values.shrink_to_fit();
     check(values.capacity() == 0);
@@ -117,7 +117,7 @@ void check_failures() {
     static_assert(!std::is_copy_constructible_v<pointers> && std::is_nothrow_move_constructible_v<pointers>);
     pointers movable;
     for (int i = 0; i < 5; ++i) movable.push_back(std::make_unique<int>(i)).value();
-    movable.erase_unordered(1);
+    movable.erase_unordered(1).value();
     check(movable.size() == 4 && *movable.column<0>()[1] == 4);
 }
 
@@ -157,10 +157,10 @@ void check_records() {
     static_assert(std::same_as<decltype(constant.chunk(0).columns().name), std::span<const std::string>>);
     static_assert(std::same_as<decltype(constant.column<^^particle::x>()[0]), const float&>);
     auto saved = values.read(4);
-    values.write(0, saved);
+    values.write(0, saved).value();
     check(values[0].y == 20);
     values.push_back(particle{3, 4, "last"}).value();
-    values.erase_unordered(0);
+    values.erase_unordered(0).value();
     check(values[0].name == "last" && values.size() == 8);
 
     kk::record_chunked_soa<sequenced, 2> ordered;
@@ -187,7 +187,7 @@ int main() {
     kk::chunked_soa<3> empty;
     empty.resize(7).value();
     empty.push_back().value();
-    empty.erase_unordered(0);
+    empty.erase_unordered(0).value();
     check(empty.size() == 7 && empty.chunk_count() == 3 && empty.chunk(2).size() == 1);
     positions points;
     points.resize(259).value();

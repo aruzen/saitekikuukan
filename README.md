@@ -90,7 +90,7 @@ storage.x[0] = 1.0f;
 vertices.begin()->x += 1.0f;
 vertices.column<^^vertex::y>()[0] = 2.0f;
 vertex value = vertices.read(0);
-vertices.write(1, value);
+vertices.write(1, value).value();
 using fixed_vertices = kk::record_soa<vertex, kk::storage::fixed_layout<1024>>;
 ```
 
@@ -108,7 +108,7 @@ Fixed columns construct their entire capacity upfront. Resizable element types m
 or nothrow move constructible.
 
 Insertion stages all arguments before allocating, including references to existing columns.
-Failed insertion/growth preserves row counts and column lengths. Standard dynamic columns use copy-and-swap
+Failed insertion/growth keeps row counts and column lengths consistent. Standard dynamic columns use copy-and-swap
 for copy assignment. Throwing element assignment/swapping may partially change values during `write`,
 `erase_unordered`, or fixed-column assignment. Reacquire views/references after invalidating operations;
 even `reserve` or failed growth may reallocate some columns.
@@ -133,7 +133,7 @@ for (auto chunk : points.chunks()) {
     }
 }
 points.column<0>()[129] = 10.0f;
-points.erase_unordered(0);
+points.erase_unordered(0).value();
 ```
 
 ```cpp
@@ -157,7 +157,7 @@ use these for vectorizable inner loops. They permit element updates while the ow
 Const owners expose const elements through every view.
 
 `reserve(n)` constructs blocks, `capacity()` reports allocated row capacity, and `chunk_count()` counts active blocks.
-`resize(n)` preserves record defaults and restores row counts on failure.
+Without matching notifications, `resize(n)` preserves record defaults and restores row counts on failure.
 Like fixed SoA, blocks construct all column slots upfront, so column elements must be default constructible.
 Unused slot objects remain alive after pop, clear, or shrink; `shrink_to_fit()` releases unused blocks.
 Copyable columns support copying; move-only columns are also supported.
@@ -203,17 +203,60 @@ Owning columns and ID tables are private. `columns()`, `column<N>()`, and `get<N
 `capacity()` reports data-column capacity; ID columns and lookup indexes allocate additional storage.
 Identified rows reserve the names `id`, `get`, `parent`, and `index` for the row API.
 
-## Insertion events
+## Events
 
-Select the final `Events` argument and register listeners through `events()`.
-Both identity modes support pre-insertion modification/cancellation and post-insertion notification.
+Select `Events` with the last template argument and access it through `events()`.
+Insertion, deletion, row swaps, and explicit updates support notifications with and without IDs,
+for fixed, dynamic, and chunked layouts.
 
-- With identity: `will_insert_event<ID, Types...>` / `did_insert_event<ID, Types...>` carry IDs and field references.
-- Without identity: `will_insert_row_event<Types...>` / `did_insert_row_event<Types...>` carry the insertion index and field references.
+| Event system | Listener storage and invocation |
+| --- | --- |
+| `dummy` | No notifications, additional event state, or row snapshots |
+| `registration<Events...>` | Register external listeners and invoke them in registration order |
+| `one_event_each_only<Events...>` | Register one external listener per event |
+| `zero_cost<Listeners...>` | Construct temporary listeners in template argument order |
+| `minimum_cost<Listeners...>` | Store only stateful listeners; invoke all listeners in template argument order |
 
-Events apply to `push_back`; cancellation returns `operation_canceled`.
-Resize, erase, and swap do not emit notifications. If a post-insertion callback throws, insertion has completed.
-Registries do not own listeners; listeners must remain alive while registered.
+Static listeners provide `listen_event` and `on(Event&)`, for example by inheriting
+`listener_tag<Event>`. Empty lists and multiple listeners for the same event are supported.
+`minimum_cost` stores its stateful listeners in the public `events().listeners` tuple, in declaration order.
+
+| Operation | With IDs | Without IDs |
+| --- | --- | --- |
+| Insert | `will_insert_event<ID, Types...>` / `did_insert_event<ID, Types...>` | `will_insert_row_event<Types...>` / `did_insert_row_event<Types...>` |
+| Delete | `will_delete_event<ID, Types...>` / `did_delete_event<ID, Types...>` | `will_delete_row_event<Types...>` / `did_delete_row_event<Types...>` |
+| Swap rows | `will_swap_event<ID, Types...>` / `did_swap_event<ID, Types...>` | `will_swap_row_event<Types...>` / `did_swap_row_event<Types...>` |
+| Update | `will_update_event<ID, Types...>` / `did_update_event<ID, Types...>` | `will_update_row_event<Types...>` / `did_update_row_event<Types...>` |
+
+Before events support `cancel()`. Cancellation returns `operation_canceled` and skips the corresponding after event.
+Before insert/update events expose mutable references to the proposed values in `data`.
+Before delete/swap events expose read-only rows. Generated insertion IDs can be changed;
+IDs in delete/swap/update events are read-only.
+After insert/update/swap events reference stored elements, including writable `vector<bool>` values.
+
+Before deletion, the payload contains `index`, `data`, and, when enabled, `id`.
+After deletion, only the removed row's `index` and optional `id` are provided.
+No destroyed elements are referenced, so deletion notifications also support move-only fields.
+Swap events expose `first_index`, `second_index`, `first`, and `second`.
+Their optional `first_id` and `second_id` describe the IDs at those positions at notification time.
+
+- `erase`, `erase_unordered`, and `pop_back` emit deletion events. Internal relocation during deletion does not emit swap events.
+- `swap_rows` emits swap events. Swapping a position with itself emits nothing.
+- `write` emits update events. Direct writes through column or row references emit nothing.
+- Growing `resize` emits insert events; shrinking `resize` and `clear` emit delete events from the back.
+- Empty `pop_back`/`clear` and unchanged `resize` emit nothing.
+- `reserve`, whole-container copy/move/swap, and destruction do not emit row events.
+
+`push_back`, `resize`, `write`, `erase`, `erase_unordered`, `pop_back`, `clear`, and `swap_rows`
+return `expected<void, error_code>`. Invalid row positions still throw `out_of_range`.
+Operations without matching subscriptions use the underlying storage path directly.
+
+Observable `resize`/`clear` operations process one row at a time and stop at the first cancellation or exception.
+Previously completed row operations and notifications remain committed.
+If an after listener throws, the corresponding row operation has already completed.
+
+External listeners are not owned: keep them alive while registered.
+During notification, do not change the row count or row order of the same buffer, or change its listener lists.
 
 ## Generating column storage alone
 

@@ -18,12 +18,12 @@ int main() {
     for (auto [id, value] : running)
         *value += id;
 
-    running.erase_unordered(0);
+    running.erase_unordered(0).value();
     sample::check(running.column<0>()[0] == 8 && *running.column<1>()[0] == 88);
     sample::check(pending.push_back(9, std::make_unique<int>(90)).has_value());
     sample::check(pending.size() == 1);
 
-    running.clear();
+    running.clear().value();
     sample::check(running.empty());
     std::cout << "move-only: moved-from container reused, job=" << pending.column<0>()[0] << '\n';
 }

@@ -310,141 +310,186 @@ namespace SAITEKIKUUKAN_NAMESPACE {
     namespace eventsystem {
         // will_* は操作前、did_* は操作完了後の通知を表す。
         namespace event {
+            class cancellable {
+                bool m_canceled = false;
+
+            public:
+                bool canceled() const { return m_canceled; }
+
+                void cancel() { m_canceled = true; }
+            };
+
             template<typename... Types>
-            struct will_insert_row_event {
+            struct will_insert_row_event : cancellable {
                 const size_t index;
                 std::tuple<Types&...> data;
 
                 will_insert_row_event(size_t index, std::tuple<Types&...> data)
                     : index(index), data(data) {}
-
-                bool canceled() const { return m_canceled; }
-
-                void cancel() { m_canceled = true; }
-
-            private:
-                bool m_canceled = false;
             };
 
             template<typename... Types>
             struct did_insert_row_event {
                 const size_t index;
                 const std::tuple<Types&...> data;
+
+                did_insert_row_event(size_t index, std::tuple<Types&...> data)
+                    : index(index), data(data) {}
             };
 
-            template<typename IDType, typename ...Types>
-            struct will_insert_event {
-            private:
-                bool m_canceled = false;
+            template<typename ID, typename... Types>
+            struct will_insert_event : cancellable {
+                ID& id;
+                std::tuple<Types&...> data;
 
-            public:
-                will_insert_event(IDType &id, std::tuple<Types &...> data) : id(id), data(data) {};
-
-                IDType &id;
-                std::tuple<Types &...> data;
-
-                bool canceled() {
-                    return m_canceled;
-                }
-
-                void cancel() {
-                    m_canceled = true;
-                }
+                will_insert_event(ID& id, std::tuple<Types&...> data) : id(id), data(data) {}
             };
 
-            template<typename IDType, typename ...Types>
+            template<typename ID, typename... Types>
             struct did_insert_event {
-                did_insert_event(IDType id, std::tuple<Types &...> data) : id(id), data(data) {};
+                const ID id;
+                const std::tuple<Types&...> data;
 
-                const IDType id;
-                const std::tuple<Types &...> data;
+                did_insert_event(ID id, std::tuple<Types&...> data)
+                    : id(std::move(id)), data(data) {}
             };
 
-            template<typename IDType, typename ...Types>
-            struct will_delete_event {
-            private:
-                bool m_canceled = false;
+            // 削除前は読み取り専用の行を通知し、削除後は破棄済み要素を参照しない。
+            template<typename... Types>
+            struct will_delete_row_event : cancellable {
+                const size_t index;
+                const std::tuple<const Types&...> data;
 
-            public:
-                will_delete_event(IDType &id, std::tuple<Types &...> data) : id(id), data(data) {};
-
-                IDType &id;
-                std::tuple<Types &...> data;
-
-                bool canceled() {
-                    return m_canceled;
-                }
-
-                void cancel() {
-                    m_canceled = true;
-                }
+                will_delete_row_event(size_t index, std::tuple<const Types&...> data)
+                    : index(index), data(data) {}
             };
 
-            template<typename IDType, typename ...Types>
-            struct did_delete_event {
-                did_delete_event(IDType id, std::tuple<Types &...> data) : id(id), data(data) {};
+            template<typename... Types>
+            struct did_delete_row_event {
+                const size_t index;
 
-                const IDType id;
-                const std::tuple<Types &...> data;
+                explicit did_delete_row_event(size_t index) : index(index) {}
             };
 
-            template<typename IDType, typename ...Types>
-            struct will_swap_event {
-            private:
-                bool m_canceled = false;
+            template<typename ID, typename... Types>
+            struct will_delete_event : will_delete_row_event<Types...> {
+                const ID& id;
 
-            public:
-                will_swap_event(IDType &id, std::tuple<Types &...> first,
-                                std::tuple<Types &...> second)
-                    : id(id), first(first), second(second) {};
-
-                IDType &id;
-                std::tuple<Types &...> first, second;
-
-                bool canceled() {
-                    return m_canceled;
-                }
-
-                void cancel() {
-                    m_canceled = true;
-                }
+                will_delete_event(const ID& id, size_t index, std::tuple<const Types&...> data)
+                    : will_delete_row_event<Types...>(index, data), id(id) {}
             };
 
-            template<typename IDType, typename ...Types>
-            struct did_swap_event {
-                did_swap_event(IDType id, std::tuple<Types &...> first,
-                               std::tuple<Types &...> second)
-                    : id(id), first(first), second(second) {};
+            template<typename ID, typename... Types>
+            struct did_delete_event : did_delete_row_event<Types...> {
+                const ID id;
 
-                const IDType id;
-                const std::tuple<Types &...> first, second;
+                did_delete_event(ID id, size_t index)
+                    : did_delete_row_event<Types...>(index), id(std::move(id)) {}
             };
 
+            template<typename... Types>
+            struct will_swap_row_event : cancellable {
+                const size_t first_index, second_index;
+                const std::tuple<const Types&...> first, second;
+
+                will_swap_row_event(size_t first_index, size_t second_index,
+                    std::tuple<const Types&...> first, std::tuple<const Types&...> second)
+                    : first_index(first_index), second_index(second_index), first(first),
+                      second(second) {}
+            };
+
+            template<typename... Types>
+            struct did_swap_row_event {
+                const size_t first_index, second_index;
+                const std::tuple<Types&...> first, second;
+
+                did_swap_row_event(size_t first_index, size_t second_index,
+                    std::tuple<Types&...> first, std::tuple<Types&...> second)
+                    : first_index(first_index), second_index(second_index), first(first),
+                      second(second) {}
+            };
+
+            template<typename ID, typename... Types>
+            struct will_swap_event : will_swap_row_event<Types...> {
+                const ID& first_id;
+                const ID& second_id;
+
+                will_swap_event(const ID& first_id, const ID& second_id, size_t first_index,
+                    size_t second_index, std::tuple<const Types&...> first,
+                    std::tuple<const Types&...> second)
+                    : will_swap_row_event<Types...>(first_index, second_index, first, second),
+                      first_id(first_id), second_id(second_id) {}
+            };
+
+            template<typename ID, typename... Types>
+            struct did_swap_event : did_swap_row_event<Types...> {
+                const ID& first_id;
+                const ID& second_id;
+
+                did_swap_event(const ID& first_id, const ID& second_id, size_t first_index,
+                    size_t second_index, std::tuple<Types&...> first, std::tuple<Types&...> second)
+                    : did_swap_row_event<Types...>(first_index, second_index, first, second),
+                      first_id(first_id), second_id(second_id) {}
+            };
+
+            // 更新前の data は代入予定の値。更新後の data は格納済みの行を参照する。
+            template<typename... Types>
+            struct will_update_row_event : cancellable {
+                const size_t index;
+                std::tuple<Types&...> data;
+
+                will_update_row_event(size_t index, std::tuple<Types&...> data)
+                    : index(index), data(data) {}
+            };
+
+            template<typename... Types>
+            struct did_update_row_event {
+                const size_t index;
+                const std::tuple<Types&...> data;
+
+                did_update_row_event(size_t index, std::tuple<Types&...> data)
+                    : index(index), data(data) {}
+            };
+
+            template<typename ID, typename... Types>
+            struct will_update_event : will_update_row_event<Types...> {
+                const ID& id;
+
+                will_update_event(const ID& id, size_t index, std::tuple<Types&...> data)
+                    : will_update_row_event<Types...>(index, data), id(id) {}
+            };
+
+            template<typename ID, typename... Types>
+            struct did_update_event : did_update_row_event<Types...> {
+                const ID& id;
+
+                did_update_event(const ID& id, size_t index, std::tuple<Types&...> data)
+                    : did_update_row_event<Types...>(index, data), id(id) {}
+            };
         }
 
         template<typename Event>
         struct listener_tag {
             using listen_event = Event;
 
-            void on(Event &) {};
+            void on(Event&) {};
         };
 
         template<typename Event>
         struct listener_interface : public listener_tag<Event> {
-            virtual void on(Event &) = 0;
+            virtual void on(Event&) = 0;
         };
 
         template<typename T, typename E>
-        concept eventsystem_for = requires(T t, E &e) {
+        concept eventsystem_for = requires(T t, E& e) {
             { t.on(e) };
         };
 
         template<typename T>
-        concept is_eventsystem = requires {
-            typename T::event_types;
-        } && []<typename... Ev>(type_list<Ev...> *) {
-            return (eventsystem_for<T, Ev> && ...);
-        }(static_cast<typename T::event_types *>(nullptr));
+        concept is_eventsystem =
+            requires { typename T::event_types; } && []<typename... Ev>(type_list<Ev...>*) {
+                return (eventsystem_for<T, Ev> && ...);
+            }(static_cast<typename T::event_types*>(nullptr));
 
         namespace helper {
             template<typename T>
@@ -459,42 +504,42 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             };
         }
 
-        template<typename ...Events>
+        template<typename... Events>
         struct registration {
             using event_types = type_list<Events...>;
 
         private:
-            std::tuple<std::vector<listener_interface<Events> *>...> listeners;
+            std::tuple<std::vector<listener_interface<Events>*>...> listeners;
 
         public:
             template<typename Event>
-            listener_interface<Event> *add(listener_interface<Event> *listener) {
+            listener_interface<Event>* add(listener_interface<Event>* listener) {
                 std::get<std::vector<listener_interface<Event>*>>(listeners).push_back(listener);
                 return listener;
             }
 
             template<typename Event>
-            void remove(listener_interface<Event> *listener) {
+            void remove(listener_interface<Event>* listener) {
                 std::erase(std::get<std::vector<listener_interface<Event>*>>(listeners), listener);
             }
 
             template<typename Event>
-            void on(Event &e) {
-                for (auto* listener: std::get<std::vector<listener_interface<Event>*>>(listeners))
+            void on(Event& e) {
+                for (auto* listener : std::get<std::vector<listener_interface<Event>*>>(listeners))
                     listener->on(e);
             };
         };
 
-        template<typename ...Events>
+        template<typename... Events>
         struct one_event_each_only {
             using event_types = type_list<Events...>;
 
         private:
-            std::tuple<listener_interface<Events> *...> listeners;
+            std::tuple<listener_interface<Events>*...> listeners{};
 
         public:
             template<typename Event>
-            listener_interface<Event> *add(listener_interface<Event> *listener) {
+            listener_interface<Event>* add(listener_interface<Event>* listener) {
                 std::get<listener_interface<Event>*>(listeners) = listener;
                 return listener;
             }
@@ -505,72 +550,59 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             }
 
             template<typename Event>
-            void on(Event &e) {
+            void on(Event& e) {
                 if (auto* listener = std::get<listener_interface<Event>*>(listeners))
                     listener->on(e);
             };
         };
 
-        /*
-         * リスナを保持せず、通知時に一時生成する。
-         */
-        template<typename... Types>
+        // リスナを保持せず、通知時に一時生成する。
+        template<typename... Listeners>
         struct zero_cost {
-            using listener_types = type_list<Types...>;
+            using listener_types = type_list<Listeners...>;
+            using event_types = type_list<typename Listeners::listen_event...>;
+
+            template<typename Event>
+            void on(Event& event) {
+                (
+                    [&] {
+                        if constexpr (std::same_as<typename Listeners::listen_event, Event>)
+                            Listeners{}.on(event);
+                    }(),
+                    ...);
+            }
+        };
+
+        // 状態を持つリスナだけを保持し、宣言順に通知する。
+        template<typename... Listeners>
+        struct minimum_cost {
+            using listener_types = type_list<Listeners...>;
+            using event_types = type_list<typename Listeners::listen_event...>;
+            using stored_types = listener_types::template filter<helper::not_empty>;
+            [[no_unique_address]] stored_types::template apply<std::tuple> listeners;
 
         private:
-            template<typename Event, size_t Idx>
-            void apply(Event &e) {
-                if constexpr (Idx < listener_types::size) {
-                    using Listener = listener_types::template get<Idx>;
-                    if constexpr (std::same_as<typename Listener::listen_event, Event>)
-                        Listener().on(e);
-                    apply<Event, Idx + 1>(e);
+            template<typename Event, size_t Index = 0, size_t Stored = 0>
+            void dispatch(Event& event) {
+                if constexpr (Index < listener_types::size) {
+                    using listener = typename listener_types::template get<Index>;
+                    if constexpr (std::is_empty_v<listener>) {
+                        if constexpr (std::same_as<typename listener::listen_event, Event>)
+                            listener{}.on(event);
+                        dispatch<Event, Index + 1, Stored>(event);
+                    } else {
+                        if constexpr (std::same_as<typename listener::listen_event, Event>)
+                            std::get<Stored>(listeners).on(event);
+                        dispatch<Event, Index + 1, Stored + 1>(event);
+                    }
                 }
             }
 
         public:
             template<typename Event>
-            void on(Event &e) {
-                apply<Event, 0>(e);
-            };
-        };
-
-        /*
-         * 状態を持つリスナだけを保持し、空のリスナは通知時に生成する。
-         */
-        template<typename... Types>
-        struct minimum_cost {
-            using listener_types = type_list<Types...>;
-            using empty_types = listener_types::template filter<std::is_empty>;
-            using not_empty_types = listener_types::template filter<helper::not_empty>;
-            not_empty_types::template apply<std::tuple> listeners;
-
-        private:
-            template<typename Event, size_t Size, size_t Idx, std::array<size_t, Size> Rem>
-            void apply_entities(Event &e) {
-                std::get<Rem[Idx]>(listeners).on(e);
-                if constexpr (Idx < Size)
-                    apply_entities<Rem[Size], Size, Idx + 1, Rem>();
+            void on(Event& event) {
+                dispatch(event);
             }
-
-            template<typename Event, size_t Idx>
-            void apply_class(Event &e) {
-                using Listener = empty_types::template get<Idx>;
-                if constexpr (std::same_as<typename Listener::listen_event, Event>)
-                    Listener().on(e);
-                if constexpr (Idx < empty_types::size)
-                    apply_class<Event, Idx + 1>();
-            }
-
-        public:
-            template<typename Event>
-            void on(Event &e) {
-                constexpr auto not_empty_indices = not_empty_types::template filtered_index<
-                    helper::event_targeting<Event>::is_subscribe>();
-                apply_class<Event, 0>(e);
-                apply_entities<Event, not_empty_indices.size(), 0, not_empty_types>(e);
-            };
         };
 
         struct dummy {
@@ -1948,16 +1980,105 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                         typename Fields::template get<Indices>>...>;
                 references values(owner.template column<Indices>()[position]...);
                 auto tied = std::apply([](auto&... fields) { return std::tie(fields...); }, values);
-                function(tied);
+                auto commit = [&] {
+                    (
+                        [&] {
+                            if constexpr (!std::is_const_v<Owner> &&
+                                          !std::is_lvalue_reference_v<
+                                              decltype(owner.template column<Indices>()[position])>)
+                                owner.template column<Indices>()[position] =
+                                    std::move(std::get<Indices>(values));
+                        }(),
+                        ...);
+                };
+                try {
+                    function(tied);
+                } catch (...) {
+                    commit();
+                    throw;
+                }
+                commit();
+            }(std::make_index_sequence<Fields::size>{});
+        }
+
+        template<typename Fields, typename ID = void>
+        struct mutation_events;
+
+        template<typename... Fields, typename ID>
+        struct mutation_events<type_list<Fields...>, ID> {
+            using before_delete = eventsystem::event::will_delete_event<ID, Fields...>;
+            using after_delete = eventsystem::event::did_delete_event<ID, Fields...>;
+            using before_swap = eventsystem::event::will_swap_event<ID, Fields...>;
+            using after_swap = eventsystem::event::did_swap_event<ID, Fields...>;
+            using before_update = eventsystem::event::will_update_event<ID, Fields...>;
+            using after_update = eventsystem::event::did_update_event<ID, Fields...>;
+        };
+
+        template<typename... Fields>
+        struct mutation_events<type_list<Fields...>, void> {
+            using before_delete = eventsystem::event::will_delete_row_event<Fields...>;
+            using after_delete = eventsystem::event::did_delete_row_event<Fields...>;
+            using before_swap = eventsystem::event::will_swap_row_event<Fields...>;
+            using after_swap = eventsystem::event::did_swap_row_event<Fields...>;
+            using before_update = eventsystem::event::will_update_row_event<Fields...>;
+            using after_update = eventsystem::event::did_update_row_event<Fields...>;
+        };
+
+        template<typename Event, typename Events>
+        inline constexpr bool observes = Events::event_types::template contains<Event>;
+
+        template<typename Event, typename Events, typename... Args>
+        bool dispatch_event(Events& events, Args&&... args) {
+            if constexpr (observes<Event, Events>) {
+                Event event{std::forward<Args>(args)...};
+                events.on(event);
+                if constexpr (requires { event.canceled(); })
+                    return !event.canceled();
+            }
+            return true;
+        }
+
+        template<typename Event, typename Events, typename Owner, typename... IDs>
+        bool notify_row(Events& events, Owner& owner, size_t position, const IDs&... ids) {
+            if constexpr (observes<Event, Events>) {
+                bool accepted = true;
+                with_row_references<typename Owner::element_types>(
+                    owner, position, [&](auto references) {
+                        accepted = dispatch_event<Event>(events, ids..., position, references);
+                    });
+                return accepted;
+            }
+            return true;
+        }
+
+        template<typename Event, typename Events, typename Owner, typename... IDs>
+        bool notify_swap(
+            Events& events, Owner& owner, size_t left, size_t right, const IDs&... ids) {
+            if constexpr (observes<Event, Events>) {
+                bool accepted = true;
+                with_row_references<typename Owner::element_types>(owner, left, [&](auto first) {
+                    with_row_references<typename Owner::element_types>(
+                        owner, right, [&](auto second) {
+                            accepted =
+                                dispatch_event<Event>(events, ids..., left, right, first, second);
+                        });
+                });
+                return accepted;
+            }
+            return true;
+        }
+
+        template<typename Owner>
+        void swap_row_values(Owner& owner, size_t left, size_t right) {
+            [&]<size_t... Indices>(std::index_sequence<Indices...>) {
                 (
                     [&] {
-                        if constexpr (!std::is_lvalue_reference_v<
-                                          decltype(owner.template column<Indices>()[position])>)
-                            owner.template column<Indices>()[position] =
-                                std::move(std::get<Indices>(values));
+                        auto view = owner.template column<Indices>();
+                        auto first = std::ranges::begin(view);
+                        std::ranges::iter_swap(first + left, first + right);
                     }(),
                     ...);
-            }(std::make_index_sequence<Fields::size>{});
+            }(std::make_index_sequence<Owner::element_types::size>{});
         }
 
         // ID 管理を列の配置から分離する。
@@ -1969,6 +2090,8 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             [[no_unique_address]] Events m_events;
             using schema_type = typename Storage::schema_type;
             using data_tuple = typename Storage::element_types::template apply<std::tuple>;
+            using notifications =
+                mutation_events<typename Storage::element_types, typename Generator::generate_type>;
 
         public:
             using value_type = typename Storage::value_type;
@@ -2197,7 +2320,23 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 return m_storage.read(i);
             }
 
-            void write(size_t i, value_type value) { m_storage.write(i, std::move(value)); }
+            [[nodiscard]] std::expected<void, error_code> write(size_t i, value_type value) {
+                if (i >= size())
+                    throw std::out_of_range("Buffer row index");
+                using before_update = typename notifications::before_update;
+                if constexpr (observes<before_update, Events>) {
+                    bool accepted = schema_type::apply_value(value, [&](auto&... fields) {
+                        return dispatch_event<before_update>(
+                            m_events, m_storage.ids[i], i, std::tie(fields...));
+                    });
+                    if (!accepted)
+                        return std::unexpected{error_code::operation_canceled};
+                }
+                m_storage.write(i, std::move(value));
+                notify_row<typename notifications::after_update>(
+                    m_events, *this, i, m_storage.ids[i]);
+                return {};
+            }
 
             Events& events() { return m_events; }
 
@@ -2267,33 +2406,97 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             std::expected<void, error_code> resize(size_t count)
                 requires std::default_initializable<value_type>
             {
+                if (count > max_size())
+                    return std::unexpected{error_code::buffer_over};
+                if constexpr (observes<typename notifications::before_delete, Events> ||
+                              observes<typename notifications::after_delete, Events>) {
+                    if (count < size()) {
+                        while (size() > count) {
+                            auto result = pop_back();
+                            if (!result)
+                                return result;
+                        }
+                        return {};
+                    }
+                }
+                if constexpr (observes<before, Events> || observes<after, Events>) {
+                    if (count > size()) {
+                        while (size() < count) {
+                            auto result = push_back(value_type{});
+                            if (!result)
+                                return result;
+                        }
+                        return {};
+                    }
+                }
                 return m_storage.resize_with_generator(count, m_generator);
             }
 
-            void pop_back() { m_storage.pop_back(); }
-
-            void clear() { m_storage.clear(); }
-
-            void swap_rows(size_t left, size_t right) {
-                auto result = m_storage.swap(left, right);
-                if (!result)
-                    throw std::out_of_range("Buffer row index");
+            [[nodiscard]] std::expected<void, error_code> pop_back() {
+                if (empty())
+                    return {};
+                return erase_unordered(size() - 1);
             }
 
-            void erase_unordered(size_t index) {
+            [[nodiscard]] std::expected<void, error_code> clear() {
+                if constexpr (observes<typename notifications::before_delete, Events> ||
+                              observes<typename notifications::after_delete, Events>) {
+                    while (!empty()) {
+                        auto result = pop_back();
+                        if (!result)
+                            return result;
+                    }
+                } else {
+                    m_storage.clear();
+                }
+                return {};
+            }
+
+            [[nodiscard]] std::expected<void, error_code> swap_rows(size_t left, size_t right) {
+                if (left >= size() || right >= size())
+                    throw std::out_of_range("Buffer row index");
+                if (left == right)
+                    return {};
+                if (!notify_swap<typename notifications::before_swap>(m_events,
+                        std::as_const(*this), left, right, m_storage.ids[left],
+                        m_storage.ids[right]))
+                    return std::unexpected{error_code::operation_canceled};
+                auto result = m_storage.swap(left, right);
+                if (!result)
+                    return result;
+                notify_swap<typename notifications::after_swap>(
+                    m_events, *this, left, right, m_storage.ids[left], m_storage.ids[right]);
+                return {};
+            }
+
+            [[nodiscard]] std::expected<void, error_code> erase_unordered(size_t index) {
                 if (index >= size())
                     throw std::out_of_range("Buffer row index");
-                if (index != size() - 1)
-                    swap_rows(index, size() - 1);
-                pop_back();
+                if (!notify_row<typename notifications::before_delete>(
+                        m_events, std::as_const(*this), index, m_storage.ids[index]))
+                    return std::unexpected{error_code::operation_canceled};
+                auto erase_row = [&] {
+                    // 削除の内部移動は交換イベントを発火させない。
+                    if (index != size() - 1)
+                        (void)m_storage.swap(index, size() - 1);
+                    m_storage.pop_back();
+                };
+                if constexpr (observes<typename notifications::after_delete, Events>) {
+                    auto id = m_storage.ids[index];
+                    erase_row();
+                    dispatch_event<typename notifications::after_delete>(
+                        m_events, std::move(id), index);
+                } else {
+                    erase_row();
+                }
+                return {};
             }
 
             std::expected<void, error_code> erase(const id_type& id) {
                 auto position = index(id);
                 if (!position)
                     return std::unexpected{position.error()};
-                erase_unordered(*position);
-                return {};
+                return erase_unordered(*position);
             }
 
             iterator begin() { return {this, 0}; }
@@ -2776,6 +2979,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         private:
             [[no_unique_address]] Events m_events;
             using data_tuple = typename element_types::template apply<std::tuple>;
+            using notifications = mutation_events<element_types>;
             using before =
                 typename element_types::template apply<eventsystem::event::will_insert_row_event>;
             using after =
@@ -2843,7 +3047,89 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             {
                 if (count > this->max_size())
                     return std::unexpected{error_code::buffer_over};
+                if constexpr (observes<typename notifications::before_delete, Events> ||
+                              observes<typename notifications::after_delete, Events>) {
+                    if (count < this->size()) {
+                        while (this->size() > count) {
+                            auto result = pop_back();
+                            if (!result)
+                                return result;
+                        }
+                        return {};
+                    }
+                }
+                if constexpr (observes<before, Events> || observes<after, Events>) {
+                    if (count > this->size()) {
+                        while (this->size() < count) {
+                            auto result = push_back(typename Rows::value_type{});
+                            if (!result)
+                                return result;
+                        }
+                        return {};
+                    }
+                }
                 Rows::resize(count);
+                return {};
+            }
+
+            [[nodiscard]] std::expected<void, error_code> write(
+                size_t i, typename Rows::value_type value) {
+                if (i >= this->size())
+                    throw std::out_of_range("Buffer row index");
+                using before_update = typename notifications::before_update;
+                if constexpr (observes<before_update, Events>) {
+                    bool accepted = rows_schema<Rows>::apply_value(value, [&](auto&... fields) {
+                        return dispatch_event<before_update>(m_events, i, std::tie(fields...));
+                    });
+                    if (!accepted)
+                        return std::unexpected{error_code::operation_canceled};
+                }
+                Rows::write(i, std::move(value));
+                notify_row<typename notifications::after_update>(m_events, *this, i);
+                return {};
+            }
+
+            [[nodiscard]] std::expected<void, error_code> swap_rows(size_t left, size_t right) {
+                if (left >= this->size() || right >= this->size())
+                    throw std::out_of_range("Buffer row index");
+                if (left == right)
+                    return {};
+                if (!notify_swap<typename notifications::before_swap>(
+                        m_events, std::as_const(*this), left, right))
+                    return std::unexpected{error_code::operation_canceled};
+                swap_row_values(*this, left, right);
+                notify_swap<typename notifications::after_swap>(m_events, *this, left, right);
+                return {};
+            }
+
+            [[nodiscard]] std::expected<void, error_code> erase_unordered(size_t index) {
+                if (index >= this->size())
+                    throw std::out_of_range("Buffer row index");
+                if (!notify_row<typename notifications::before_delete>(
+                        m_events, std::as_const(*this), index))
+                    return std::unexpected{error_code::operation_canceled};
+                Rows::erase_unordered(index);
+                dispatch_event<typename notifications::after_delete>(m_events, index);
+                return {};
+            }
+
+            [[nodiscard]] std::expected<void, error_code> pop_back() {
+                if (this->empty())
+                    return {};
+                return erase_unordered(this->size() - 1);
+            }
+
+            [[nodiscard]] std::expected<void, error_code> clear() {
+                if constexpr (observes<typename notifications::before_delete, Events> ||
+                              observes<typename notifications::after_delete, Events>) {
+                    while (!this->empty()) {
+                        auto result = pop_back();
+                        if (!result)
+                            return result;
+                    }
+                } else {
+                    Rows::clear();
+                }
                 return {};
             }
 

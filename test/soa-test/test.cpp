@@ -64,8 +64,8 @@ void check_rows() {
     typename Values::const_iterator converted = values.begin();
     check(std::get<0>(*converted) == 10);
     check(values.end() - values.begin() == 3);
-    values.write(2, {30, "written"});
-    values.erase_unordered(0);
+    values.write(2, {30, "written"}).value();
+    values.erase_unordered(0).value();
     check(values.size() == 2 && std::get<0>(values.read(0)) == 30);
     auto copied = values;
     copied = std::as_const(copied);
@@ -80,7 +80,7 @@ void check_rows() {
         std::abort();
     } catch (const std::out_of_range&) {
     }
-    values.clear();
+    values.clear().value();
     check(values.empty() && values.template get<1>().empty());
 }
 
@@ -92,7 +92,7 @@ void check_aliasing() {
         values.push_back(a, b).value();
     values.push_back(values.template get<1>()[0], values.template get<0>()[0]).value();
     check(values.read(values.size() - 1) == std::tuple{b, a});
-    values.write(0, values.read(values.size() - 1));
+    values.write(0, values.read(values.size() - 1)).value();
     check(values.read(0) == std::tuple{b, a});
 }
 
@@ -176,11 +176,11 @@ void check_records() {
     check(const_values.begin()->x == 10);
     auto row = values.read(1);
     row.name = "updated";
-    values.write(0, row);
+    values.write(0, row).value();
     check(values[0].y == 20 && values[0].name == "updated");
     values.push_back(vertex{}).value();
     check(values[3].normal[2] == 1);
-    values.erase_unordered(0);
+    values.erase_unordered(0).value();
     check(values[0].name == "default");
 
     kk::buffer<vertex, kk::strategy::structure_of_array, kk::storage::dynamic_layout<8>,
@@ -204,7 +204,7 @@ int main() {
     empty.resize(10).value();
     empty.push_back().value();
     check(empty.size() == 11 && empty.end() - empty.begin() == 11);
-    empty.erase_unordered(0);
+    empty.erase_unordered(0).value();
     check(empty.size() == 10);
     kk::fixed_soa<4> fixed_empty;
     fixed_empty.resize(4).value();

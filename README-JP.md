@@ -92,7 +92,7 @@ auto [vx, vy, normals, names] = storage;
 vertices.begin()->x += 1.0f;
 vertices.column<^^vertex::y>()[0] = 2.0f;
 vertex value = vertices.read(0);     // 所有する構造体の値
-vertices.write(1, value);
+vertices.write(1, value).value();
 
 using fixed_vertices = kk::record_soa<vertex, kk::storage::fixed_layout<1024>>;
 // 上限付き可変長: kk::storage::dynamic_layout<1024>
@@ -111,7 +111,7 @@ const なコンテナでは `std::span<const T>` です。`std::vector<bool>` �
 `reserve` / `capacity` / `max_size` があれば利用します。固定長列は容量分の要素を最初に構築します。
 可変長列の要素にはコピー構築か例外を投げないムーブ構築が必要です。
 
-追加前に全列の引数を退避するため、既存列を引数にした追加にも対応します。追加や拡張中に例外が起きても行数と列長を保ちます。
+追加前に全列の引数を退避するため、既存列を引数にした追加にも対応します。追加や拡張中に例外が起きても、行数と列長の整合性を保ちます。
 標準の可変長列のコピー代入は、コピーを完了してから置き換えます。
 要素の代入・交換が例外を投げる場合、`write`・`erase_unordered`・固定長列の代入は一部の値が変わることがあります。
 再確保などで参照が無効になる操作後は列ビューや行参照を取得し直してください。
@@ -138,7 +138,7 @@ for (auto chunk : points.chunks()) {
     }
 }
 points.column<0>()[129] = 10.0f;
-points.erase_unordered(0); // 全体の末尾行を移して削除
+points.erase_unordered(0).value(); // 全体の末尾行を移して削除
 ```
 
 ```cpp
@@ -163,7 +163,7 @@ SIMD化を狙う走査は、上の例のようにチャンクごとの連続列�
 const なコンテナの列・行・チャンクは、いずれも const な要素を参照します。
 
 `reserve(n)` は必要なチャンクを構築し、`capacity()` は確保済みの行容量、`chunk_count()` は有効行を持つチャンク数を返します。
-`resize(n)` は各行を元の構造体のデフォルト値で初期化し、失敗時は全体の行数を戻します。
+通知を伴わない `resize(n)` は各行を元の構造体のデフォルト値で初期化し、失敗時は全体の行数を戻します。
 固定長 SoA と同じく容量分の列要素を構築するため、列の要素にはデフォルト構築が必要です。
 `pop_back`・`clear`・縮小後も未使用スロットのオブジェクトを保持し、`shrink_to_fit()` で未使用チャンクを解放します。
 コピー可能な列ならコピーに対応し、move-only の列も保持できます。
@@ -211,15 +211,55 @@ ID付きの行では `id`・`get`・`parent`・`index` が行APIの予約名で�
 
 ## イベント
 
-最後のテンプレート引数で `Events` を指定し、`events()` からリスナを登録・解除します。
-IDの有無にかかわらず、挿入前の値変更・キャンセルと挿入後の通知に対応します。
+最後のテンプレート引数で `Events` を指定し、`events()` からイベントシステムを参照します。
+IDの有無、固定長・可変長・Chunkのいずれでも、追加・削除・交換・更新の前後を通知できます。
 
-- IDあり: `will_insert_event<ID, Types...>` / `did_insert_event<ID, Types...>`。IDと列の参照を通知します。
-- IDなし: `will_insert_row_event<Types...>` / `did_insert_row_event<Types...>`。挿入位置の `index` と列の参照を通知します。
+| イベントシステム | リスナの保持と呼び出し |
+| --- | --- |
+| `dummy` | 通知なし。イベントのための状態や行の退避を追加しない |
+| `registration<Events...>` | 外部リスナを登録・解除。同じイベントの登録順に呼び出す |
+| `one_event_each_only<Events...>` | イベントごとに外部リスナを一つ登録 |
+| `zero_cost<Listeners...>` | リスナを保持せず、通知時に一時生成。型の宣言順に呼び出す |
+| `minimum_cost<Listeners...>` | 状態を持つリスナだけを保持し、空のリスナと合わせて宣言順に呼び出す |
 
-イベントは `push_back` に適用し、キャンセル時は `operation_canceled` を返します。
-`resize`・削除・交換による通知は行いません。挿入後の通知が投げた場合、挿入自体は完了しています。
-登録先はリスナを所有しないため、登録中のリスナを生存させてください。
+`zero_cost` / `minimum_cost` のリスナは `listen_event` と `on(Event&)` を持ちます。
+`listener_tag<Event>` を継承して宣言でき、空のリスナ一覧や同じイベントを購読する複数のリスナにも対応します。
+`minimum_cost` の状態を持つリスナは、宣言順に `events().listeners` のtupleへ格納します。
+
+| 操作 | IDあり | IDなし |
+| --- | --- | --- |
+| 追加 | `will_insert_event<ID, Types...>` / `did_insert_event<ID, Types...>` | `will_insert_row_event<Types...>` / `did_insert_row_event<Types...>` |
+| 削除 | `will_delete_event<ID, Types...>` / `did_delete_event<ID, Types...>` | `will_delete_row_event<Types...>` / `did_delete_row_event<Types...>` |
+| 行交換 | `will_swap_event<ID, Types...>` / `did_swap_event<ID, Types...>` | `will_swap_row_event<Types...>` / `did_swap_row_event<Types...>` |
+| 更新 | `will_update_event<ID, Types...>` / `did_update_event<ID, Types...>` | `will_update_row_event<Types...>` / `did_update_row_event<Types...>` |
+
+`will_*` は `cancel()` で操作を取り消せます。取り消した行操作は `operation_canceled` を返し、対応する `did_*` は通知しません。
+追加・更新前の `data` は格納予定の値への参照で、リスナから修正できます。
+削除・交換前の行は読み取り専用です。追加時の生成IDは変更できますが、削除・交換・更新のIDは読み取り専用です。
+追加・更新・交換後の参照は格納済みの要素を指し、リスナから修正できます。`vector<bool>` の値も書き戻します。
+
+削除前は `index` と `data`、IDありなら `id` を通知します。
+削除後は削除位置の `index` と、IDありなら削除された `id` だけを通知します。
+破棄済みの要素への参照を渡さないため、move-onlyの列でも削除通知を使えます。
+交換時の `first_index` / `second_index`、`first` / `second` は指定位置の行を表します。
+IDありの `first_id` / `second_id` も、その通知時点で各位置にあるIDです。
+
+- `erase` / `erase_unordered` / `pop_back` は削除イベントを通知します。削除に伴う内部移動では交換イベントを通知しません。
+- `swap_rows` は交換イベントを通知します。同じ位置同士の交換は通知しません。
+- `write` は更新イベントを通知します。列ビューや行参照への直接代入は通知しません。
+- `resize` の拡張は追加イベント、縮小と `clear` は末尾から削除イベントを通知します。
+- 空の `pop_back` / `clear`、サイズを変えない `resize` は通知しません。
+- `reserve`、コンテナ全体のコピー・ムーブ・交換、デストラクタは行イベントを通知しません。
+
+`push_back` / `resize` / `write` / `erase` / `erase_unordered` / `pop_back` / `clear` / `swap_rows` は
+`expected<void, error_code>` を返します。行位置の境界検査による `out_of_range` 例外は従来と同じです。
+通知対象のない操作は、従来の格納処理を直接使います。
+
+通知を伴う `resize` / `clear` は行ごとに処理し、キャンセルや例外が起きた時点で停止します。
+それまでに完了した行操作と通知は維持されます。`did_*` のリスナが例外を投げた場合も、対応する行操作自体は完了しています。
+
+外部登録型はリスナを所有しないため、登録中のリスナを生存させてください。
+通知中は同じbufferの行数や並び順を変更する操作を呼び出さず、通知先のリスナ一覧も変更しないでください。
 
 ## 列ストレージだけを生成する
 

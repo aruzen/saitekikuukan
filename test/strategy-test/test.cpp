@@ -31,11 +31,11 @@ void check_ids() {
     check(values.erase(second).has_value());
     check(!values.find(second));
     check(values.index(fourth).value() == 1 && values[1].id() == fourth);
-    values.swap_rows(0, 2);
+    values.swap_rows(0, 2).value();
     check(values.find(first)->template get<0>() == 10 && values.index(third).value() == 0);
     values.find(first)->template get<0>() = 11;
     check(values.template get<0>(first).value().get() == 11);
-    values.write(1, {44, "changed"});
+    values.write(1, {44, "changed"}).value();
     check(values.find(fourth)->template get<1>() == "changed");
 
     const auto& constant = values;
@@ -56,11 +56,11 @@ void check_ids() {
     for (std::size_t i = 0; i < values.size(); ++i)
         check(values.index((values.begin() + i)->id()).value() == i);
     const auto tail = (values.end() - 1)->id();
-    values.pop_back();
+    values.pop_back().value();
     check(!values.find(tail));
     check(values.resize(1).has_value());
     check(values.find(third)->template get<0>() == 30 && !values.find(first));
-    values.clear();
+    values.clear().value();
     check(values.empty() && !values.find(third));
     check(values.push_back(8, "new").has_value());
     check(values.index(values.begin()->id()).value() == 0);

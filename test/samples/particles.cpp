@@ -34,7 +34,7 @@ int main() {
     auto saved = values.read(0);
     std::get<0>(saved) = 100;
     sample::check(values.column<0>()[0] == 2);
-    values.write(0, saved);
+    values.write(0, saved).value();
     sample::check(values.column<0>()[0] == 100);
 
     std::cout << "particles: x=" << values.column<0>()[0] << ", y=" << values.column<1>()[0]

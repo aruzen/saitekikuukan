@@ -11,6 +11,7 @@ if(SAITEKIKUUKAN_BUILD_TESTS)
         fixed-capacity
         buffer-ids
         insertion-events
+        lifecycle-events
         chunked-particles
         custom-columns
         move-only
