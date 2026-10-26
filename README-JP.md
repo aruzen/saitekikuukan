@@ -209,6 +209,27 @@ ID型にはコピー構築と、例外を投げないムーブ・交換が必要
 `capacity()` はデータ列の容量を返し、ID列とハッシュ索引の確保は追加で発生します。
 ID付きの行では `id`・`get`・`parent`・`index` が行APIの予約名です。
 
+## コルーチンによるID生成
+
+`generator::coroutine_generator<T>` は `co_yield` した値を `optional<T>` で返します。
+空・終了後・ムーブ元の生成器は `nullopt` を返し、コルーチン内部の例外は `next()` から伝播します。
+ハンドルを単独所有するムーブ専用型で、`T` にmove-only型も使えます。
+
+状態を持つ生成器は、ID付き `buffer` のコンストラクタへ渡せます。
+第2引数にイベントシステムの初期値も指定できます。
+
+```cpp
+using ids = kk::generator::coroutine_generator<std::size_t>;
+ids make_ids() {
+    co_yield 10;
+    co_yield 20;
+}
+using values_type = kk::buffer<kk::type_list<int>, kk::strategy::structure_of_array,
+    kk::storage::dynamic_layout<>, kk::identity::generated<ids>>;
+values_type values{make_ids()};
+values.push_back(7).value();
+```
+
 ## イベント
 
 最後のテンプレート引数で `Events` を指定し、`events()` からイベントシステムを参照します。
