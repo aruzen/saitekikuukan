@@ -2557,6 +2557,119 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             using type = chunked_buffer<Size, Types...>;
         };
 
+        // Sparse の各ページには物理行番号だけを保持する。ID 本体は所有側の ID 列で照合する。
+        template<typename ID, size_t PageSize, typename Key>
+        class sparse_index {
+            static_assert(PageSize > 0, "Sparse page size must be positive");
+            using key_type = std::remove_cvref_t<std::invoke_result_t<const Key&, const ID&>>;
+            static_assert(std::unsigned_integral<key_type> && !std::same_as<key_type, bool> &&
+                sizeof(key_type) <= sizeof(size_t), "Sparse keys must be unsigned and fit size_t");
+            static_assert(std::is_nothrow_invocable_v<const Key&, const ID&>,
+                "Sparse key projection must be noexcept");
+            static constexpr size_t missing = std::numeric_limits<size_t>::max();
+
+        public:
+            struct entry { size_t second = missing; };
+
+        private:
+            using page = std::array<entry, PageSize>;
+            std::vector<std::unique_ptr<page>> m_pages;
+            [[no_unique_address]] Key m_key;
+
+            size_t key(const ID& id) const noexcept { return static_cast<size_t>(m_key(id)); }
+
+        public:
+            sparse_index() = default;
+
+            sparse_index(const sparse_index& other) : m_key(other.m_key) {
+                m_pages.resize(other.m_pages.size());
+                for (size_t i = 0; i < m_pages.size(); ++i)
+                    if (other.m_pages[i])
+                        m_pages[i] = std::make_unique<page>(*other.m_pages[i]);
+            }
+
+            sparse_index(sparse_index&&) = default;
+            sparse_index& operator=(sparse_index&&) = default;
+
+            sparse_index& operator=(const sparse_index& other) {
+                sparse_index copy(other);
+                swap(copy);
+                return *this;
+            }
+
+            void swap(sparse_index& other) noexcept(std::is_nothrow_swappable_v<Key>) {
+                m_pages.swap(other.m_pages);
+                using std::swap;
+                swap(m_key, other.m_key);
+            }
+
+            friend void swap(sparse_index& a, sparse_index& b) noexcept(noexcept(a.swap(b))) {
+                a.swap(b);
+            }
+
+            size_t max_size() const noexcept {
+                if constexpr (std::numeric_limits<key_type>::max() <
+                              std::numeric_limits<size_t>::max())
+                    return static_cast<size_t>(std::numeric_limits<key_type>::max()) + 1;
+                return std::numeric_limits<size_t>::max();
+            }
+
+            void reserve(size_t count) {
+                m_pages.reserve(count / PageSize + (count % PageSize != 0));
+            }
+
+            entry* find(const ID& id) noexcept {
+                const auto slot = key(id);
+                if (slot / PageSize >= m_pages.size() || !m_pages[slot / PageSize])
+                    return nullptr;
+                auto* found = &(*m_pages[slot / PageSize])[slot % PageSize];
+                return found->second == missing ? nullptr : found;
+            }
+
+            const entry* find(const ID& id) const noexcept {
+                return const_cast<sparse_index*>(this)->find(id);
+            }
+
+            entry* end() noexcept { return nullptr; }
+
+            const entry* end() const noexcept { return nullptr; }
+
+            std::pair<entry*, bool> emplace(const ID& id, size_t position) {
+                const auto slot = key(id);
+                const auto block = slot / PageSize;
+                if (block >= m_pages.size())
+                    m_pages.resize(block + 1);
+                if (!m_pages[block])
+                    m_pages[block] = std::make_unique<page>();
+                auto* found = &(*m_pages[block])[slot % PageSize];
+                if (found->second != missing)
+                    return {found, false};
+                found->second = position;
+                return {found, true};
+            }
+
+            size_t erase(const ID& id) noexcept {
+                if (auto* found = find(id)) {
+                    found->second = missing;
+                    return 1;
+                }
+                return 0;
+            }
+
+            void clear() noexcept {
+                for (auto& block : m_pages)
+                    if (block)
+                        block->fill(entry{});
+            }
+        };
+
+        template<typename Lookup>
+        inline constexpr bool uses_sparse_index = [] {
+            if constexpr (requires { Lookup::sparse; })
+                return Lookup::sparse;
+            return false;
+        }();
+
         struct empty_id_index {};
     }
 
@@ -2577,6 +2690,24 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             static constexpr bool indexed = true;
             template<typename ID>
             using index = std::unordered_map<ID, size_t>;
+        };
+
+        struct sparse_key {
+            template<std::unsigned_integral ID>
+            ID operator()(ID id) const noexcept { return id; }
+
+            template<typename ID>
+            auto operator()(const ID& id) const noexcept(noexcept(id.slot())) -> decltype(id.slot()) {
+                return id.slot();
+            }
+        };
+
+        template<size_t PageSize = 256, typename Key = sparse_key>
+        struct sparse_id_lookup {
+            static constexpr bool indexed = true;
+            static constexpr bool sparse = true;
+            template<typename ID>
+            using index = _detail::sparse_index<ID, PageSize, Key>;
         };
     }
 
@@ -2669,7 +2800,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 std::is_copy_constructible_v<ID> && std::is_nothrow_move_constructible_v<ID> &&
                     std::is_nothrow_move_assignable_v<ID> && std::is_nothrow_swappable_v<ID>,
                 "IDs require copy construction and noexcept move/swap");
-            static_assert(!Lookup::indexed ||
+            static_assert(!Lookup::indexed || uses_sparse_index<Lookup> ||
                               (std::is_nothrow_invocable_v<std::hash<ID>, const ID&> &&
                                   noexcept(std::declval<const ID&>() == std::declval<const ID&>())),
                 "Indexed ID lookup requires noexcept hashing and equality");
@@ -2861,8 +2992,13 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             std::expected<size_t, error_code> index(const ID& id) const {
                 if constexpr (Lookup::indexed) {
                     auto found = m_index.find(id);
-                    if (found != m_index.end())
+                    if (found != m_index.end()) {
+                        if constexpr (uses_sparse_index<Lookup>) {
+                            if (!(ids[found->second] == id))
+                                return std::unexpected{error_code::not_found_id};
+                        }
                         return found->second;
+                    }
                 } else {
                     for (size_t i = 0; i < size(); ++i)
                         if (ids[i] == id)

@@ -230,6 +230,24 @@ values_type values{make_ids()};
 values.push_back(7).value();
 ```
 
+## Sparse索引
+
+整数IDには `strategy::sparse_id_lookup<PageSize = 256, Key = strategy::sparse_key>` も使えます。
+ハッシュを使わず、ページ化した配列でIDから物理行番号を直接引きます。
+既定のキーは符号なし整数の値、またはIDの `slot()` が返す符号なし整数です。
+独自の `Key` は例外を投げずに符号なし整数を返す関数オブジェクトです。
+同じキーを持つIDは同時に格納できず、検索時はID全体も照合します。
+
+```cpp
+using ids = kk::identity::generated<kk::generator::iota, kk::strategy::sparse_id_lookup<>>;
+kk::buffer<kk::type_list<float>, kk::strategy::structure_of_array,
+    kk::storage::dynamic_layout<>, ids> values;
+```
+
+要素用ページは必要になった時だけ確保します。外側のページ表は最大キーに応じて伸びるため、
+極端に疎な巨大IDにはハッシュ方式が適します。`reserve(n)` はページ表の予約を行い、
+`clear` は確保済みのページを再利用します。ハッシュ方式も平均O(1)なので、速度・メモリは用途ごとに比較します。
+
 ## イベント
 
 最後のテンプレート引数で `Events` を指定し、`events()` からイベントシステムを参照します。

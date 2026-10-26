@@ -429,8 +429,58 @@ void check_named() {
 }
 #endif
 
+// 同じスロットを持つ古い世代の ID を、現在の行として返さない。
+struct slotted_id {
+    unsigned position = 0, version = 0;
+    unsigned slot() const noexcept { return position; }
+    friend bool operator==(const slotted_id&, const slotted_id&) = default;
+};
+
+struct slotted_ids {
+    using generate_type = slotted_id;
+    unsigned version = 0;
+    std::optional<slotted_id> next() { return slotted_id{4096, version++}; }
+};
+
+struct checked_slot {
+    std::size_t operator()(const checked_id& id) const noexcept { return id.value; }
+};
+
+void check_sparse_slots() {
+    using lookup = kk::strategy::sparse_id_lookup<16>;
+    using identity = kk::identity::generated<slotted_ids, lookup>;
+    kk::buffer<kk::type_list<int>, kk::strategy::structure_of_array,
+        kk::storage::dynamic_layout<>, identity> values;
+    values.push_back(10).value();
+    check(!values.find(slotted_id{4096, 1}));
+    check(values.push_back(20).error() == kk::error_code::duplicate_id);
+    check(values.size() == 1 && values.find(slotted_id{4096, 0})->get<0>() == 10);
+    values.erase(slotted_id{4096, 0}).value();
+    values.push_back(30).value();
+    check(!values.find(slotted_id{4096, 0}));
+    check(values.find(slotted_id{4096, 2})->get<0>() == 30);
+    auto copy = values;
+    copy.clear().value();
+    check(values.find(slotted_id{4096, 2})->get<0>() == 30 && copy.empty());
+
+    // ID 幅が小さい場合も、最後のキーを格納できる。
+    kk::strategy::sparse_id_lookup<3>::index<unsigned char> index;
+    check(index.max_size() == 256);
+    check(index.emplace(255, 9).second);
+    check(index.find(255)->second == 9);
+    check(!index.emplace(255, 7).second);
+    index.erase(255);
+    check(index.find(255) == index.end());
+}
+
 int main() {
     check_optional_identity();
+    check_sparse_slots();
+    check(lookup_comparisons<kk::strategy::sparse_id_lookup<16, checked_slot>>() == 128);
+    check_ids<kk::storage::fixed_layout<8>, kk::strategy::sparse_id_lookup<2>>();
+    check_ids<kk::storage::dynamic_layout<8>, kk::strategy::sparse_id_lookup<2>>();
+    check_ids<kk::storage::chunked_layout<2>, kk::strategy::sparse_id_lookup<2>>();
+    check_duplicates<kk::strategy::sparse_id_lookup<2>>();
     check_ids<kk::storage::fixed_layout<8>, kk::strategy::linear_id_lookup>();
     check_ids<kk::storage::fixed_layout<8>, kk::strategy::hash_id_lookup>();
     check_ids<kk::storage::dynamic_layout<8>, kk::strategy::linear_id_lookup>();
