@@ -203,6 +203,13 @@ Owning columns and ID tables are private. `columns()`, `column<N>()`, and `get<N
 `capacity()` reports data-column capacity; ID columns and lookup indexes allocate additional storage.
 Identified rows reserve the names `id`, `get`, `parent`, and `index` for the row API.
 
+## Coroutine ID generators
+
+`generator::coroutine_generator<T>` returns yielded values as `optional<T>`.
+Empty, exhausted, and moved-from generators return `nullopt`; coroutine exceptions propagate from `next()`.
+The generator exclusively owns its frame, is move-only, and also supports move-only values.
+Pass a stateful generator to an identified buffer's constructor; an initial event system may be passed as its second argument.
+
 ## Events
 
 Select `Events` with the last template argument and access it through `events()`.

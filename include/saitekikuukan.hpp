@@ -235,46 +235,72 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         };
 
         template<typename T>
-        struct coroutine_generator {
-            using generate_type = size_t;
+        class coroutine_generator {
+        public:
+            using generate_type = T;
 
             struct promise_type {
                 std::optional<T> current_value;
+                std::exception_ptr exception;
 
                 coroutine_generator get_return_object() {
                     return coroutine_generator{
-                            std::coroutine_handle<promise_type>::from_promise(*this)
-                    };
+                        std::coroutine_handle<promise_type>::from_promise(*this)};
                 }
 
                 std::suspend_always initial_suspend() noexcept { return {}; }
 
                 std::suspend_always final_suspend() noexcept { return {}; }
 
-                std::suspend_always yield_value(T value) noexcept {
-                    current_value = std::move(value);
+                std::suspend_always yield_value(T value) {
+                    current_value.emplace(std::move(value));
                     return {};
                 }
 
-                void return_void() {}
+                void return_void() noexcept {}
 
-                void unhandled_exception() { throw; }
+                void unhandled_exception() noexcept { exception = std::current_exception(); }
             };
 
-            std::coroutine_handle<promise_type> handle;
+        private:
+            using handle_type = std::coroutine_handle<promise_type>;
+            handle_type m_handle = nullptr;
 
-            explicit coroutine_generator(std::coroutine_handle<promise_type> h) : handle(h) {}
+            explicit coroutine_generator(handle_type handle) noexcept : m_handle(handle) {}
+
+        public:
+            coroutine_generator() noexcept = default;
+            coroutine_generator(const coroutine_generator&) = delete;
+            coroutine_generator& operator=(const coroutine_generator&) = delete;
+
+            coroutine_generator(coroutine_generator&& other) noexcept
+                : m_handle(std::exchange(other.m_handle, nullptr)) {}
+
+            coroutine_generator& operator=(coroutine_generator&& other) noexcept {
+                if (this != std::addressof(other)) {
+                    if (m_handle)
+                        m_handle.destroy();
+                    m_handle = std::exchange(other.m_handle, nullptr);
+                }
+                return *this;
+            }
 
             ~coroutine_generator() {
-                if (handle) handle.destroy();
+                if (m_handle)
+                    m_handle.destroy();
             }
 
             std::optional<T> next() {
-                if (!handle.done()) {
-                    handle.resume();
-                    return handle.promise().current_value;
-                }
-                return std::nullopt;
+                if (!m_handle || m_handle.done())
+                    return std::nullopt;
+                auto& promise = m_handle.promise();
+                promise.current_value.reset();
+                m_handle.resume();
+                if (promise.exception)
+                    std::rethrow_exception(std::exchange(promise.exception, {}));
+                if (m_handle.done())
+                    return std::nullopt;
+                return std::move(promise.current_value);
             }
         };
 
@@ -2129,6 +2155,11 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 std::conditional_t<Const, const identified_buffer, identified_buffer>>;
             using iterator = basic_iterator<false>;
             using const_iterator = basic_iterator<true>;
+
+            identified_buffer() = default;
+
+            explicit identified_buffer(Generator generator, Events events = {})
+                : m_generator(std::move(generator)), m_events(std::move(events)) {}
 
             size_t size() const { return m_storage.size(); }
 
