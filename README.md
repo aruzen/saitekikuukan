@@ -233,6 +233,23 @@ Changing a recycling ID in a before-insert event returns `invalid_id`.
 Custom releasable generators implement `release(const ID&) noexcept` and use IDs with noexcept copy construction.
 Generators without release support retain their existing behavior.
 
+## Row algorithms and batch operations
+
+`sort(compare, projection = std::identity{})` compares read-only rows, then permutes every column and its ID together.
+It is not stable. Comparisons and projections finish before rows move; sorting uses two index arrays and does not copy field values.
+For reflected rows, a projection can return `row.x`.
+
+`append_range(rows)` accepts an input range constructible as the original row value type and returns the appended count.
+Buffers with the same value type can also be copied across layouts/identity policies. Appended rows receive new IDs.
+Input is staged before storage grows, supporting self-append and aliased column views; use move iterators for move-only values.
+Staging needs memory proportional to the input size. Input/staging/capacity failures append no rows.
+
+`erase_if(predicate)` evaluates read-only rows, removes matches without preserving order, and returns the removed count.
+Sort returns `expected<void, error_code>`; append and erase return `expected<size_t, error_code>`.
+All operations use public row mutation APIs, including events and ID lifetime management.
+Cancellation or exceptions during mutation retain previously completed changes; compare sizes to count completed insertions/deletions on failure.
+Do not change the target buffer's row count or row order from comparisons, projections, predicates, or input-range evaluation.
+
 ## Events
 
 Select `Events` with the last template argument and access it through `events()`.
