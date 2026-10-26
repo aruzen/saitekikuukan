@@ -209,6 +209,14 @@ Identified rows reserve the names `id`, `get`, `parent`, and `index` for the row
 Empty, exhausted, and moved-from generators return `nullopt`; coroutine exceptions propagate from `next()`.
 The generator exclusively owns its frame, is move-only, and also supports move-only values.
 Pass a stateful generator to an identified buffer's constructor; an initial event system may be passed as its second argument.
+## Sparse ID lookup
+
+`strategy::sparse_id_lookup<PageSize = 256, Key = strategy::sparse_key>` maps unsigned keys directly to row positions using paged arrays.
+The default key projection accepts unsigned integer IDs or IDs with an unsigned `slot()` accessor.
+Custom projections must be noexcept and return an unsigned integer fitting `size_t`.
+Only one ID per projected key can be stored; lookup also checks the complete ID.
+Pages are allocated on demand. The outer page table grows with the largest key, so prefer hashing for extremely sparse, large keys.
+`reserve(n)` reserves page-table capacity; `clear()` retains pages for reuse. Compare memory use and constant costs for your workload.
 
 ## Events
 
