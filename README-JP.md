@@ -48,7 +48,7 @@
 | 引数 | 既定値 | 選択肢 |
 | --- | --- | --- |
 | Schema | `type_list<>` | `type_list<Types...>`、構造体（C++26 reflection） |
-| Structure | `strategy::structure_of_array` | 列の所有と行・列アクセスを提供する配置方針 |
+| Structure | `strategy::structure_of_array` | `strategy::array_of_structure`、独自の配置方針 |
 | Layout | `storage::dynamic_layout<>` | `fixed_layout<N>`、`dynamic_layout<N>`、`chunked_layout<N>` |
 | Identity | `identity::none` | `identity::generated<Generator, Lookup>` |
 | Events | `eventsystem::dummy` | 登録型リスナ、独自イベントシステムなど |
@@ -59,6 +59,42 @@ IDなしの場合は、ID列・ジェネレータ・検索索引を保持しま�
 
 追加とサイズ変更は `expected<void, error_code>` を返します。容量超過は `buffer_over` です。
 確保や要素の構築・代入が投げた例外は伝播します。
+
+## AoSの配置方針
+
+`strategy::array_of_structure` は行オブジェクトをまとめて保持します。
+固定長・可変長のlayoutと組み合わせられ、ID・イベント・行ソート・一括操作はSoAと共通です。
+
+```cpp
+// C++23: 型パックの各行をtupleとして保持
+kk::buffer<kk::type_list<float, float>, kk::strategy::array_of_structure> points;
+points.push_back(1.0f, 2.0f).value();
+auto [x, y] = points.columns();
+x[0] = 3.0f;
+
+// C++26: 構造体そのものを行として保持
+struct particle { float x = 1, y = 2; std::string name = "default"; };
+kk::buffer<particle, kk::strategy::array_of_structure> particles;
+particles.resize(3).value();
+particles.begin()->x = 10;
+auto storage = particles.columns();
+storage.y[0] = 20;
+particles.column<^^particle::name>()[0] = "first";
+```
+
+IDなしの標準layoutでは行が連続し、`operator[]`・`at`・行イテレータは実体への参照を返します。
+列は同じ行配列を射影したランダムアクセスのビューで、連続範囲ではありません。
+constなコンテナからは、列も行もconstな要素を参照します。
+IDありの行は、IDと名前付きメンバにアクセスできる従来どおりの参照プロキシです。
+
+配置を切り替えても行を更新するコードは `auto&&`、比較・projectionは `const auto&` で受けると共通化できます。
+AoSのIDなし行を `auto row` や `auto [x, y]` で受けると、通常のC++どおり行の値をコピーします。
+`columns()` の構造化束縛はビューのコピーなので、`auto [x, y] = values.columns()` で元の要素を更新できます。
+
+容量管理・追加やresizeの失敗時の整合性は既存の列管理を再利用します。
+固定長では容量分の行を最初に構築し、縮小・clear後も未使用スロットを保持します。
+動的な行にはコピー構築またはnoexceptなムーブ構築が必要です。
+構造体スキーマの制約はSoAと同じです。
 
 ## 列ビューと行アクセス
 
@@ -103,7 +139,7 @@ const なコンテナでは `std::span<const T>` です。`std::vector<bool>` �
 `columns()` のメンバ名と順序は構造体と同じです。各ビューの長さを変更しても所有列の長さは変わりません。
 行の `operator[]` は境界検査なし、`at`・`read`・`write`・`erase_unordered` は境界検査ありです。
 `erase_unordered(i)` は末尾行を移して削除するため、順序を保持しません。
-行イテレータはランダムアクセスの参照プロキシで、行の値の読み書きには `read` / `write` を使います。
+SoAの行イテレータはランダムアクセスの参照プロキシで、行の値の読み書きには `read` / `write` を使います。
 `soa<>` や空の構造体でも行数を保持します。ID なしの構造体には `id` などの予約メンバ名はありません。
 
 固定長・可変長の `Layout` は `column<T>`・`resizable`・`max_size` を持つ型です。独自の列コンテナも同じ行管理に接続できます。

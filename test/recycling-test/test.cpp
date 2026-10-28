@@ -3,11 +3,11 @@
 
 using buffer_test::check;
 
-template<typename Layout, typename Lookup>
+template<typename Layout, typename Lookup, typename Structure = kk::strategy::structure_of_array>
 void check_reuse() {
     using identity = kk::identity::recycled<Lookup>;
     using values_type = kk::buffer<kk::type_list<int, std::string>,
-        kk::strategy::structure_of_array, Layout, identity>;
+        Structure, Layout, identity>;
     values_type values;
     values.push_back(10, "first").value();
     const auto first = values.begin()->id();
@@ -215,6 +215,9 @@ int main() {
     check_reuse<kk::storage::dynamic_layout<8>, kk::strategy::sparse_id_lookup<2>>();
     check_reuse<kk::storage::fixed_layout<8>, kk::strategy::sparse_id_lookup<2>>();
     check_reuse<kk::storage::chunked_layout<2>, kk::strategy::sparse_id_lookup<2>>();
+    using aos = kk::strategy::array_of_structure;
+    check_reuse<kk::storage::dynamic_layout<8>, kk::strategy::sparse_id_lookup<2>, aos>();
+    check_reuse<kk::storage::fixed_layout<8>, kk::strategy::sparse_id_lookup<2>, aos>();
     check_generation_limits();
     check_events();
     check_failed_storage();

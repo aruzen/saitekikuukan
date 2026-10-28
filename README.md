@@ -48,7 +48,7 @@ Each argument selects an independent compile-time policy.
 | Argument | Default | Choices |
 | --- | --- | --- |
 | Schema | `type_list<>` | `type_list<Types...>` or a struct with C++26 reflection |
-| Structure | `strategy::structure_of_array` | Storage and row/column access strategy |
+| Structure | `strategy::structure_of_array` | `strategy::array_of_structure` or a custom policy |
 | Layout | `storage::dynamic_layout<>` | `fixed_layout<N>`, `dynamic_layout<N>`, `chunked_layout<N>` |
 | Identity | `identity::none` | `identity::generated<Generator, Lookup>` |
 | Events | `eventsystem::dummy` | Registered listeners or a custom event system |
@@ -59,6 +59,31 @@ Without identity, the buffer stores no ID column, generator, or lookup index.
 
 `push_back` and `resize` return `expected<void, error_code>`, with `buffer_over` for capacity limits.
 Allocation and element exceptions propagate.
+
+## Array-of-structures strategy
+
+`strategy::array_of_structure` stores complete row objects using fixed or dynamic layouts.
+ID policies, events, sorting, and batch operations use the same buffer APIs as SoA.
+Type-list schemas store tuples in C++23; reflected struct schemas store the original record type in C++26.
+
+```cpp
+kk::buffer<particle, kk::strategy::array_of_structure> particles;
+particles.resize(3).value();
+particles.begin()->x = 10;
+auto columns = particles.columns();
+columns.y[0] = 20;
+```
+
+Without IDs, standard layouts provide contiguous rows and actual row references.
+Columns are non-contiguous random-access projection views; const containers expose const elements.
+Identified rows keep the reference proxy that provides IDs and named fields.
+Use `auto&&` for mutable row iteration and `const auto&` for comparisons/projections across layouts.
+A by-value `auto row` or structured row binding copies an ordinary AoS row without IDs.
+Structured binding of `columns()` copies views and still updates the underlying data.
+
+AoS reuses the existing column manager for ownership and failure handling.
+Fixed layouts construct all row slots up front and retain inactive slots after shrinking or clearing.
+Dynamic rows require copy construction or noexcept move construction. Struct schema restrictions match SoA.
 
 ## Column views and rows
 

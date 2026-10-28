@@ -744,25 +744,30 @@ namespace SAITEKIKUUKAN_NAMESPACE {
                 using type = std::array<T, Size>;
             };
 
+            template<typename Record>
+            consteval void validate_record() {
+                static_assert(std::is_aggregate_v<Record> && !std::is_union_v<Record>,
+                    "Records must be non-union aggregates");
+                auto context = std::meta::access_context::current();
+                if (!std::meta::bases_of(^^Record, context).empty())
+                    throw "Records must not have base classes";
+                for (auto member : std::meta::nonstatic_data_members_of(^^Record, context)) {
+                    if (std::meta::is_bit_field(member))
+                        throw "Records must not contain bit-fields";
+                    if (std::meta::is_reference_type(std::meta::type_of(member)))
+                        throw "Records must not contain reference members";
+                }
+            }
+
             template<typename Record, template<typename> typename Column>
             struct columns_type {
-                static_assert(std::is_aggregate_v<Record> && !std::is_union_v<Record>,
-                              "SoA records must be non-union aggregates");
-
                 struct type;
 
                 consteval {
+                    validate_record<Record>();
                     auto context = std::meta::access_context::current();
-                    if (!std::meta::bases_of(^^Record, context).empty())
-                        throw "SoA records must not have base classes";
-
                     std::vector<std::meta::info> columns;
                     for (auto member : std::meta::nonstatic_data_members_of(^^Record, context)) {
-                        if (std::meta::is_bit_field(member))
-                            throw "SoA records must not contain bit-fields";
-                        if (std::meta::is_reference_type(std::meta::type_of(member)))
-                            throw "SoA records must not contain reference members";
-
                         auto column = std::meta::substitute(^^Column, {std::meta::type_of(member)});
                         columns.push_back(std::meta::data_member_spec(column, {
                             .name = std::meta::identifier_of(member)
@@ -2855,7 +2860,17 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         struct empty_id_index {};
     }
 
+    namespace _detail {
+        template<typename Layout, typename... Types>
+        class aos_buffer;
+    }
+
     namespace strategy {
+        struct array_of_structure {
+            template<typename Layout, typename... Types>
+            using container = _detail::aos_buffer<Layout, Types...>;
+        };
+
         struct structure_of_array {
             template<typename Layout, typename... Types>
             using container = typename _detail::soa_layout_buffer<Layout, Types...>::type;
@@ -2930,12 +2945,12 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         };
 
 #if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
-        // 配置方針が返す行の型に依存せず、各列の実際の参照型から行を生成する。
+        // 指定した型で名前付きの集成体を生成し、行参照と列ビューで共有する。
         template<typename Record, typename References>
-        struct named_indexed_fields;
+        struct named_fields;
 
         template<typename Record, typename... References>
-        struct named_indexed_fields<Record, type_list<References...>> {
+        struct named_fields<Record, type_list<References...>> {
             struct type;
             consteval {
                 constexpr std::array<std::meta::info, sizeof...(References)> types{^^References...};
@@ -2960,7 +2975,7 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
             template<size_t... Indices>
             static auto reference_type(std::index_sequence<Indices...>) ->
-                typename named_indexed_fields<typename rows_schema<Rows>::record_type,
+                typename named_fields<typename rows_schema<Rows>::record_type,
                     type_list<decltype(std::declval<parent_type&>()
                             .template column<Indices>()[size_t{}])...>>::type;
 
@@ -2973,6 +2988,214 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             }
         };
 #endif
+
+        // ================================== aos ==================================
+        // 行オブジェクトの配列を既存の一列ストレージで所有し、列は射影ビューとして返す。
+        template<typename Layout, typename... Types>
+        class aos_buffer {
+            using schema_type = schema<Types...>;
+
+        public:
+            using value_type = typename schema_type::value_type;
+            using element_types = typename schema_type::element_types;
+
+        private:
+            static_assert(
+                requires { typename Layout::template column<value_type>; },
+                "array_of_structure requires a flat row layout");
+            using storage_type = storage::basic_columns<Layout, value_type>;
+            using indices = std::make_index_sequence<element_types::size>;
+            storage_type m_storage;
+
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+            static_assert([] {
+                if constexpr (schema_type::named)
+                    storage::reflection_detail::validate_record<value_type>();
+                return true;
+            }());
+#endif
+
+            template<size_t N, typename Row>
+            static decltype(auto) field(Row& row) {
+                static_assert(N < element_types::size, "AoS column index out of range");
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+                if constexpr (schema_type::named)
+                    return (row.[:schema_type::members[N]:]);
+                else
+#endif
+                    return (std::get<N>(row));
+            }
+
+            template<size_t N>
+            struct column_access {
+                template<typename Parent>
+                static decltype(auto) get(Parent& parent, size_t index) {
+                    return field<N>(parent[index]);
+                }
+            };
+
+            template<typename Self, size_t... Indices>
+            static auto make_columns(Self& self, std::index_sequence<Indices...>) {
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+                if constexpr (schema_type::named) {
+                    using result = typename named_fields<value_type,
+                        type_list<decltype(self.template column<Indices>())...>>::type;
+                    return result{self.template column<Indices>()...};
+                } else
+#endif
+                    return std::tuple{self.template column<Indices>()...};
+            }
+
+        public:
+            size_t size() const { return m_storage.size(); }
+
+            bool empty() const { return m_storage.empty(); }
+
+            size_t capacity() const { return m_storage.capacity(); }
+
+            size_t max_size() const { return m_storage.max_size(); }
+
+            void reserve(size_t count) { m_storage.reserve(count); }
+
+            void resize(size_t count)
+                requires std::default_initializable<value_type>
+            {
+                m_storage.resize(count);
+            }
+
+            void pop_back() noexcept { m_storage.pop_back(); }
+
+            void clear() noexcept { m_storage.clear(); }
+
+            void push_back(value_type value) { m_storage.push_back(std::move(value)); }
+
+            template<typename... Args>
+                requires(sizeof...(Args) == element_types::size &&
+                         !(sizeof...(Args) == 1 &&
+                             (std::same_as<std::remove_cvref_t<Args>, value_type> && ...)))
+            void push_back(Args&&... args) {
+                m_storage.push_back(value_type{std::forward<Args>(args)...});
+            }
+
+            value_type& operator[](size_t index) { return m_storage.template column<0>()[index]; }
+
+            const value_type& operator[](size_t index) const {
+                return m_storage.template column<0>()[index];
+            }
+
+            value_type& at(size_t index) {
+                if (index >= size())
+                    throw std::out_of_range("AoS row index");
+                return (*this)[index];
+            }
+
+            const value_type& at(size_t index) const {
+                if (index >= size())
+                    throw std::out_of_range("AoS row index");
+                return (*this)[index];
+            }
+
+            value_type read(size_t index) const
+                requires std::is_copy_constructible_v<value_type>
+            {
+                return at(index);
+            }
+
+            void write(size_t index, value_type value) {
+                m_storage.write(index, std::tuple<value_type>{std::move(value)});
+            }
+
+            void erase_unordered(size_t index) {
+                if (index >= size())
+                    throw std::out_of_range("AoS row index");
+                if (index != size() - 1)
+                    m_storage.swap_rows(index, size() - 1);
+                pop_back();
+            }
+
+            void swap(aos_buffer& other) noexcept(storage_type::nothrow_swap) {
+                m_storage.swap(other.m_storage);
+            }
+
+            friend void swap(aos_buffer& a, aos_buffer& b) noexcept(storage_type::nothrow_swap) {
+                a.swap(b);
+            }
+
+            template<size_t N>
+            auto column() & {
+                return indexed_range<column_access<N>>(*this, size());
+            }
+
+            template<size_t N>
+            auto column() const& {
+                return indexed_range<column_access<N>>(*this, size());
+            }
+
+            template<size_t N>
+            auto column() && = delete;
+
+            template<size_t N>
+            auto column() const&& = delete;
+
+            template<size_t N>
+            auto get() & {
+                return column<N>();
+            }
+
+            template<size_t N>
+            auto get() const& {
+                return column<N>();
+            }
+
+            template<size_t N>
+            auto get() && = delete;
+
+            template<size_t N>
+            auto get() const&& = delete;
+
+            auto columns() & { return make_columns(*this, indices{}); }
+
+            auto columns() const& { return make_columns(*this, indices{}); }
+
+            auto columns() && = delete;
+
+            auto columns() const&& = delete;
+
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+            template<std::meta::info Member>
+            auto column() & {
+                return column<schema_type::template member_index<Member>()>();
+            }
+
+            template<std::meta::info Member>
+            auto column() const& {
+                return column<schema_type::template member_index<Member>()>();
+            }
+
+            template<std::meta::info Member>
+            auto column() && = delete;
+
+            template<std::meta::info Member>
+            auto column() const&& = delete;
+#endif
+
+            using iterator =
+                decltype(std::ranges::begin(std::declval<storage_type&>().template get<0>()));
+            using const_iterator =
+                decltype(std::ranges::begin(std::declval<const storage_type&>().template get<0>()));
+
+            iterator begin() { return std::ranges::begin(m_storage.template get<0>()); }
+
+            iterator end() { return begin() + static_cast<ptrdiff_t>(size()); }
+
+            const_iterator begin() const { return std::ranges::begin(m_storage.template get<0>()); }
+
+            const_iterator end() const { return begin() + static_cast<ptrdiff_t>(size()); }
+
+            const_iterator cbegin() const { return begin(); }
+
+            const_iterator cend() const { return end(); }
+        };
 
         // 列の所有・配置は Rows に任せ、ID 列と検索索引だけを管理する。
         template<typename Rows, typename Layout, typename ID, typename Lookup>
