@@ -16,14 +16,14 @@ auto snapshot_ids(const Values& values) {
     }
 }
 
-template<typename Layout, typename Identity>
+template<typename Layout, typename Identity, typename Structure = kk::strategy::structure_of_array>
 void check_algorithms() {
-    kk::buffer<kk::type_list<int, std::string>, kk::strategy::structure_of_array,
+    kk::buffer<kk::type_list<int, std::string>, Structure,
         Layout, Identity> values;
     const std::array<row, 4> rows{{{3, "three"}, {1, "first"}, {2, "two"}, {1, "other"}}};
     check(values.append_range(rows).value() == 4);
     const auto original = snapshot_ids(values);
-    auto key = [](auto value) {
+    auto key = [](const auto& value) {
         if constexpr (requires { value.template get<0>(); })
             return value.template get<0>();
         else
@@ -179,6 +179,11 @@ int main() {
     check_algorithms<kk::storage::dynamic_layout<12>, recycled>();
     check_algorithms<kk::storage::fixed_layout<12>, recycled>();
     check_algorithms<kk::storage::chunked_layout<2>, recycled>();
+    using aos = kk::strategy::array_of_structure;
+    check_algorithms<kk::storage::dynamic_layout<12>, kk::identity::none, aos>();
+    check_algorithms<kk::storage::fixed_layout<12>, kk::identity::none, aos>();
+    check_algorithms<kk::storage::dynamic_layout<12>, recycled, aos>();
+    check_algorithms<kk::storage::fixed_layout<12>, recycled, aos>();
     check_aliasing_and_exceptions();
     check_move_only();
     check_cancellation();

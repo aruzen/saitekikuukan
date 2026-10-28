@@ -124,11 +124,11 @@ void check_throws(Function&& function) {
     }
 }
 
-template<typename Layout, typename Identity>
+template<typename Layout, typename Identity, typename Structure = kk::strategy::structure_of_array>
 void check_lifecycle() {
     constexpr bool identified = !std::same_as<Identity, kk::identity::none>;
     using events = recorder<std::conditional_t<identified, id_types, row_types>>;
-    using buffer = kk::buffer<kk::type_list<int, std::string>, kk::strategy::structure_of_array,
+    using buffer = kk::buffer<kk::type_list<int, std::string>, Structure,
         Layout, Identity, events>;
     buffer values;
     auto& observer = values.events();
@@ -460,6 +460,11 @@ int main() {
     check_lifecycle<kk::storage::fixed_layout<8>, linear>();
     check_lifecycle<kk::storage::dynamic_layout<8>, linear>();
     check_lifecycle<kk::storage::chunked_layout<2>, linear>();
+    using aos = kk::strategy::array_of_structure;
+    check_lifecycle<kk::storage::dynamic_layout<8>, kk::identity::none, aos>();
+    check_lifecycle<kk::storage::fixed_layout<8>, kk::identity::none, aos>();
+    check_lifecycle<kk::storage::dynamic_layout<8>, hash, aos>();
+    check_lifecycle<kk::storage::fixed_layout<8>, hash, aos>();
 #if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
     check_named<kk::storage::fixed_layout<8>>();
     check_named<kk::storage::dynamic_layout<8>>();
