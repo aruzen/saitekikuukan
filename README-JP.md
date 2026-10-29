@@ -119,6 +119,38 @@ const なコンテナでは `std::span<const T>` です。`std::vector<bool>` �
 一時的な SoA から列ビューを取得する操作は拒否します。
 独自列コンテナのムーブが例外を投げる場合、整合性を保つためムーブ元を空にすることがあります。
 
+## 列を選んで処理を適用する
+
+`select<列番号...>()` は、選択した列の参照・プロキシをtupleとして返す非所有ビューです。
+構造体スキーマでは `select<^^型::メンバ...>()` でも指定できます。
+
+```cpp
+kk::soa<float, float, std::string> particles;
+particles.resize(10).value();
+auto xy = particles.select<0, 1>();
+xy.for_each([](float& x, float& y) { x += y; });
+for (auto&& [x, y] : xy)
+    y += x;
+
+// C++26 reflection。引数の順番は選択した順番。
+// auto xy = particles.select<^^particle::x, ^^particle::y>();
+```
+
+- `for_each(function)` は行順に一度ずつ呼び、選択した列要素を個別の引数として渡します。
+  callableのコピー・追加の確保・型消去は行いません。返り値は無視し、`for_each` 自体は `void` を返します。
+- 通常のSoAでは列ビューをループ外で取得します。AoSoAではチャンクごとの連続列を使い、行ごとのチャンク探索を避けます。
+  AoSなど独自の配置方針も、同じ `column<N>()` を通して利用できます。
+- ビューはランダムアクセス・sized・borrowed rangeで、`std::views::take` / `drop` / `filter` などと組み合わせられます。
+  `std::ranges::for_each(view, function)` は引数を展開せず、tupleを一つ渡す点が異なります。
+- constなbufferから作ったビューはconstな列要素を返します。ビュー自身のconstは参照先のconst性を変更しません。
+  `vector<bool>` のような列ではプロキシをそのまま渡すため、更新には `[](auto bit) { bit = true; }` などを使います。
+- 重複する列も指定でき、同じ要素を参照します。`select<>()` は0列の選択で、`for_each([] { ... })` を行数分実行します。
+
+直接の列・行参照への代入と同様、イベントは通知せず、IDは変更しません。
+callbackの例外は伝播し、それまでの更新を保持します。SIMD化は処理とコンパイラに依存します。
+ビューは取得時の行数を保持します。bufferを生存させ、サイズ変更・再確保・ムーブ・交換後は取得し直してください。
+走査中に対象bufferのサイズ・容量・並び順を変更しないでください。一時的なbufferからの取得は拒否します。
+
 ## チャンク単位の SoA（AoSoA）
 
 `storage::chunked_layout<ChunkSize>` は、固定容量のSoAをブロックとして束ねます。

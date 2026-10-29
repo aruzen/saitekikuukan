@@ -15,7 +15,8 @@ if(SAITEKIKUUKAN_BUILD_TESTS)
         chunked-particles
         custom-columns
         move-only
-        strategy-selection)
+        strategy-selection
+        selected-columns)
         saitekikuukan_add_sample(${name} saitekikuukan::saitekikuukan)
     endforeach()
 endif()
@@ -25,7 +26,8 @@ if(SAITEKIKUUKAN_BUILD_REFLECTION_TESTS)
         reflected-particles
         reflected-chunks
         reflected-buffer
-        raw-columns)
+        raw-columns
+        reflected-selection)
         saitekikuukan_add_sample(${name} saitekikuukan::reflection)
     endforeach()
 endif()
