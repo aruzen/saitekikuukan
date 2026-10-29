@@ -3553,6 +3553,67 @@ namespace SAITEKIKUUKAN_NAMESPACE {
             typename... Types>
         struct select_buffer<Structure, Layout, Identity, Events, type_list<Types...>>
             : buffer_type<Structure, Layout, Identity, Events, Types...> {};
+
+        // =============================== selection ===============================
+        // 選択順に列要素の参照・プロキシを返す。イテレータはビュー自体を参照しない。
+        template<size_t... Indices>
+        struct selection_access {
+            template<typename Parent>
+            static auto get(Parent& parent, size_t index) {
+                return std::tuple<decltype(parent.template column<Indices>()[index])...>{
+                    parent.template column<Indices>()[index]...};
+            }
+        };
+
+        template<typename Parent, size_t... Indices>
+        class selection_view
+            : public std::ranges::view_interface<selection_view<Parent, Indices...>> {
+            static_assert(((Indices < Parent::element_types::size) && ...),
+                "Selected column index out of range");
+            Parent* m_parent = nullptr;
+            size_t m_size = 0;
+
+            // 列ビューをループ外で取得し、処理に必要な列だけを走査する。
+            template<typename Owner, typename Function>
+            static void visit(Owner& owner, size_t count, Function& function) {
+                auto columns = std::tuple{owner.template column<Indices>()...};
+                std::apply(
+                    [&](auto&... column) {
+                        for (size_t i = 0; i < count; ++i)
+                            std::invoke(function, column[i]...);
+                    },
+                    columns);
+            }
+
+        public:
+            using iterator = indexed_iterator<Parent, selection_access<Indices...>>;
+
+            selection_view() = default;
+
+            explicit selection_view(Parent& parent)
+                : m_parent(std::addressof(parent)), m_size(parent.size()) {}
+
+            iterator begin() const { return {m_parent, 0}; }
+
+            iterator end() const { return {m_parent, static_cast<ptrdiff_t>(m_size)}; }
+
+            size_t size() const { return m_size; }
+
+            template<typename Function>
+                requires std::invocable<Function&,
+                    decltype(std::declval<Parent&>().template column<Indices>()[size_t{}])...>
+            void for_each(Function&& function) const {
+                if (m_size == 0)
+                    return;
+                if constexpr (requires { m_parent->chunks(); }) {
+                    // AoSoA はチャンク内の連続列を使い、行ごとのチャンク探索を避ける。
+                    for (auto chunk : m_parent->chunks())
+                        visit(chunk, chunk.size(), function);
+                } else {
+                    visit(*m_parent, m_size, function);
+                }
+            }
+        };
     }
 
     template<typename Schema = type_list<>, typename Structure = strategy::structure_of_array,
@@ -3570,6 +3631,44 @@ namespace SAITEKIKUUKAN_NAMESPACE {
         using layout_type = Layout;
         using identity_type = Identity;
         using event_system_type = Events;
+
+        template<size_t... Indices>
+        [[nodiscard]] auto select() & {
+            return _detail::selection_view<buffer, Indices...>(*this);
+        }
+
+        template<size_t... Indices>
+        [[nodiscard]] auto select() const& {
+            return _detail::selection_view<const buffer, Indices...>(*this);
+        }
+
+        template<size_t... Indices>
+        auto select() && = delete;
+
+        template<size_t... Indices>
+        auto select() const&& = delete;
+
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
+        template<std::meta::info... Members>
+            requires(sizeof...(Members) > 0)
+        [[nodiscard]] auto select() & {
+            return select<_detail::rows_schema<base_type>::template member_index<Members>()...>();
+        }
+
+        template<std::meta::info... Members>
+            requires(sizeof...(Members) > 0)
+        [[nodiscard]] auto select() const& {
+            return select<_detail::rows_schema<base_type>::template member_index<Members>()...>();
+        }
+
+        template<std::meta::info... Members>
+            requires(sizeof...(Members) > 0)
+        auto select() && = delete;
+
+        template<std::meta::info... Members>
+            requires(sizeof...(Members) > 0)
+        auto select() const&& = delete;
+#endif
 
         // 比較は読み取り専用の行で行い、並べ替えは公開の交換操作へ集約する。
         template<typename Compare, typename Projection = std::identity>
@@ -3811,13 +3910,17 @@ namespace SAITEKIKUUKAN_NAMESPACE {
 
 // ============================== std::ranges ==============================
 // 行ビューが一時オブジェクトでも、列ストレージが生きていればイテレータを利用できる。
-#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
 namespace std::ranges {
+    template<typename Parent, size_t... Indices>
+    inline constexpr bool enable_borrowed_range<
+        ::SAITEKIKUUKAN_NAMESPACE::_detail::selection_view<Parent, Indices...>> = true;
+
+#if defined(__cpp_impl_reflection) && __cpp_impl_reflection >= 202506L
     template<typename Columns>
     inline constexpr bool enable_borrowed_range<
         ::SAITEKIKUUKAN_NAMESPACE::storage::reflection_detail::rows_view<Columns>> = true;
-}
 #endif
+}
 
 namespace std {
     template<unsigned_integral Index, unsigned_integral Generation>

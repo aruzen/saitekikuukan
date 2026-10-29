@@ -115,6 +115,38 @@ even `reserve` or failed growth may reallocate some columns.
 Obtaining column views from temporary SoA containers is rejected.
 If a custom column's move constructor throws, the source may be cleared to keep column lengths consistent.
 
+## Select columns and apply a function
+
+`select<Indices...>()` returns a non-owning view of tuples containing references or proxies to
+the selected columns. Struct schemas also support `select<^^Record::member...>()`.
+
+```cpp
+kk::soa<float, float, std::string> particles;
+particles.resize(10).value();
+auto xy = particles.select<0, 1>();
+xy.for_each([](float& x, float& y) { x += y; });
+for (auto&& [x, y] : xy)
+    y += x;
+```
+
+`view.for_each(function)` invokes the same callable as an lvalue once per row, passing selected
+elements as separate arguments in selection order. It returns `void`, ignores callback results,
+and uses no callable copies, allocations, or type erasure. SoA obtains column views outside the
+loop; AoSoA visits contiguous columns within each chunk. Other structures, including AoS, use
+the same `column<N>()` interface. SIMD generation depends on the compiler and callback.
+
+The view is a random-access, sized, borrowed range and works with standard range adaptors.
+`std::ranges::for_each(view, function)` passes one tuple instead of separate fields.
+A const buffer yields const elements; making only the view const preserves its original
+element access. Proxy columns such as `vector<bool>` preserve their proxies, so use a callback
+such as `[](auto bit) { bit = true; }` to update them. Repeated selectors alias the same element.
+`select<>()` selects zero columns and invokes a no-argument callback once per row.
+
+Direct updates emit no mutation events and leave IDs unchanged. Callback exceptions propagate
+and retain earlier updates. The view captures the current row count: keep the buffer alive,
+reacquire views after size changes, reallocations, moves, or swaps, and do not change the
+buffer's size, capacity, or row order during traversal. Selecting from a temporary buffer is rejected.
+
 ## Chunked SoA (AoSoA)
 
 `storage::chunked_layout<ChunkSize>` groups fixed-capacity SoA containers into independently
